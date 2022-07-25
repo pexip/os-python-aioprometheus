@@ -2,7 +2,7 @@ Developers Guide
 ================
 
 The project is hosted on `GitHub <https://github.com/claws/aioprometheus>`_.
-and uses `Travis <https://travis-ci.org/claws/aioprometheus>`_ for
+and uses `GitHub Actions <https://github.com/claws/aioprometheus/actions>`_ for
 Continuous Integration.
 
 If you have found a bug or have an idea for an enhancement that would
@@ -68,12 +68,24 @@ code after it is installed so that any changes take effect immediately.
 Code Style
 ----------
 
-This project uses the Black code style formatter for consistent code style.
-A Makefile convenience rule is available to apply code style compliance.
+This project uses the Black code style formatter and isort to sort imports
+for consistent code style. A Makefile convenience rule is available to apply
+code style compliance.
 
 .. code-block:: console
 
     (aioprom) $ make style
+
+
+Linting
+-------
+
+This project uses Pylint to perform static analysis. A Makefile convenience
+rule is available to check linting.
+
+.. code-block:: console
+
+    (aioprom) $ make check-lint
 
 
 Type Annotations
@@ -84,16 +96,11 @@ that can improve code comprehension which can help with future enhancements.
 
 The type annotations checker ``mypy`` should run cleanly with no warnings.
 
-.. note::
-
-    There is still some work required to get mypy to run without warnings.
-    Until this rule is passing cleanly it can be ignored.
-
 Use the Makefile convenience rule to check no issues are reported.
 
 .. code-block:: console
 
-    (aioprom) $ make check_types
+    (aioprom) $ make check-types
 
 
 Test
@@ -107,19 +114,19 @@ tool which discovers all the unit tests and runs them.
 
     (aioprom) $ make test
 
-Or, you can call the standard library unittest module directly.
+To see more verbose test output run the verbose test rule.
 
 .. code-block:: console
 
-    (aioprom) $ python -m unittest discover -s tests -v
+    (aioprom) $ make test-verbose
 
-Individual unit tests can be run using the standard library ``unittest``
-package too.
+Individual unit tests can be run by calling them using the standard
+library ``unittest`` package.
 
 .. code-block:: console
 
     (aioprom) $ cd aioprometheus/tests
-    (aioprom) $ python -m unittest test_negotiate
+    (aioprom) $ python -m unittest test_negotiate.TestNegotiate.test_text_default
 
 
 Coverage
@@ -132,7 +139,7 @@ covered by tests.
 
     (aioprom) $ make coverage
 
-The test code coverage report can be found `here <../_static/coverage/index.html>`_
+The test code coverage report for the current release can be found `here <../_static/coverage/index.html>`__
 
 
 Documentation
@@ -146,16 +153,14 @@ a new set of `sphinx <http://sphinx-doc.org/>`_ html content.
 
     (aioprom) $ make docs
 
-To view the rendered docs locally as you are working you can use the simple
-Python web server.
+To view the rendered docs locally run the ``serve-docs`` rule from the top level
+directory to start a simple Python web server.
 
 .. code-block:: console
 
-    (aioprom) $ cd docs
-    (aioprom) $ python -m http.server
+    (aioprom) $ make serve-docs
 
-Then open a browser to the `docs <http://localhost:8000/_build/html/index.html>`_
-content.
+Then open a browser to the `docs <http://localhost:8000/>`_ content.
 
 
 .. _version-label:
@@ -174,13 +179,16 @@ will be incremented.
 Release Process
 ---------------
 
-Assuming that the tests are passing, the docs build without warnings and the
-type annotations check passes without warnings then a release can be made.
+The following steps are performed when making a new software release:
 
-The following steps are used to make a new software release:
+- Check that style, linting and type annotations checks pass without warnings.
 
-- Ensure that the version label in ``__init__.py`` is correct. It must comply
-  with the :ref:`version-label` scheme.
+- Check that docs build passes without errors or warnings.
+
+- Check that the version label in ``__init__.py`` has been updated for the
+  new release. It must comply with the  :ref:`version-label` scheme.
+
+- Update the CHANGELOG.md to describe the changes in this release.
 
 - Create the distribution. This project produces an artefact called a pure
   Python wheel. Only Python3 is supported by this package.
@@ -195,13 +203,13 @@ The following steps are used to make a new software release:
 
   .. code-block:: console
 
-      (aioprom) $ make dist.test
+      (aioprom) $ make test-dist
 
 - Upload to PyPI using
 
   .. code-block:: console
 
-      (aioprom) $ make dist.upload
+      (aioprom) $ make upload-dist
 
 - Create and push a repo tag to Github.
 

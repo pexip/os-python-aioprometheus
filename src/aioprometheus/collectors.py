@@ -1,18 +1,15 @@
-import collections
 import enum
-import json
 import re
+from collections import OrderedDict
+from typing import Dict, List, Sequence, Tuple, Union, cast
 
+import orjson
 import quantile
+
+from aioprometheus.mypy_types import LabelsType, NumericValueType
 
 from . import histogram
 from .metricdict import MetricDict
-from typing import cast, Any, Dict, List, Sequence, Tuple, Union
-
-# Used to return the value ordered (not necessary but for consistency useful)
-# type annotations are not correct for this package yet.
-decoder = json.JSONDecoder(object_pairs_hook=collections.OrderedDict)  # type: ignore
-
 
 METRIC_NAME_RE = re.compile(r"^[a-zA-Z_:][a-zA-Z0-9_:]*$")
 RESTRICTED_LABELS_NAMES = ("job",)
@@ -20,12 +17,6 @@ RESTRICTED_LABELS_PREFIXES = ("__",)
 
 POS_INF = float("inf")
 NEG_INF = float("-inf")
-
-# typing aliases
-LabelsType = Dict[str, str]
-NumericValueType = Union[int, float, histogram.Histogram, quantile.Estimator]
-ValueType = Union[str, NumericValueType]
-CollectorsType = Union["Counter", "Gauge", "Histogram", "Summary"]
 
 
 class MetricsTypes(enum.Enum):
@@ -36,8 +27,8 @@ class MetricsTypes(enum.Enum):
     histogram = 4
 
 
-class Collector(object):
-    """ Base class for all collectors.
+class Collector:
+    """Base class for all collectors.
 
     **Metric names and labels**
 
@@ -84,34 +75,59 @@ class Collector(object):
 
     kind = MetricsTypes.untyped
 
-    def __init__(self, name: str, doc: str, const_labels: LabelsType = None) -> None:
+    def __init__(
+        self,
+        name: str,
+        doc: str,
+        const_labels: LabelsType = None,
+        registry: "Registry" = None,
+    ) -> None:
+        """
+        :param name: The name of the metric.
+
+        :param doc: A short description of the metric.
+
+        :param const_labels: Labels that should always be included with all
+          instances of this metric.
+
+        :param registry: A collector registry that is responsible for
+          rendering the metric into various formats. When a registry is
+          not supplied then the metric will be registered with the default
+          registry.
+        """
         if not METRIC_NAME_RE.match(name):
-            raise ValueError("Invalid metric name: {}".format(name))
+            raise ValueError(f"Invalid metric name: {name}")
         self.name = name
         self.doc = doc
-        self.const_labels = const_labels
 
         if const_labels:
-            self._label_names_correct(const_labels)
+            self._check_labels(const_labels)
             self.const_labels = const_labels
+        else:
+            self.const_labels = {}
 
         self.values = MetricDict()
 
+        # Register metric with a Registry or the default registry
+        if registry is None:
+            registry = get_registry()
+        registry.register(self)
+
     def set_value(self, labels: LabelsType, value: NumericValueType) -> None:
-        """  Sets a value in the container """
+        """Sets a value in the container"""
         if labels:
-            self._label_names_correct(labels)
+            self._check_labels(labels)
         self.values[labels] = value
 
     def get_value(self, labels: LabelsType) -> NumericValueType:
-        """  Gets a value in the container.
+        """Gets a value in the container.
 
         :raises: KeyError if an item with matching labels is not present.
         """
         return self.values[labels]
 
     def get(self, labels: LabelsType) -> NumericValueType:
-        """ Gets a value in the container.
+        """Gets a value in the container.
 
         Handy alias for `get_value`.
 
@@ -119,23 +135,23 @@ class Collector(object):
         """
         return self.get_value(labels)
 
-    def _label_names_correct(self, labels: LabelsType) -> bool:
-        """ Check validity of label names.
+    def _check_labels(self, labels: LabelsType) -> bool:
+        """Check validity of label names.
 
         :raises: ValueError if labels are invalid
         """
-        for k, v in labels.items():
+        for k, _v in labels.items():
             # Check reserved labels
             if k in RESTRICTED_LABELS_NAMES:
-                raise ValueError("Invalid label name: {}".format(k))
+                raise ValueError(f"Invalid label name: {k}")
 
             if self.kind == MetricsTypes.histogram:
                 if k in ("le",):
-                    raise ValueError("Invalid label name: {}".format(k))
+                    raise ValueError(f"Invalid label name: {k}")
 
             # Check prefixes
             if any(k.startswith(i) for i in RESTRICTED_LABELS_PREFIXES):
-                raise ValueError("Invalid label prefix: {}".format(k))
+                raise ValueError(f"Invalid label prefix: {k}")
 
         return True
 
@@ -145,15 +161,10 @@ class Collector(object):
         a dict of labels and the second element is the value of the metric
         itself.
         """
-        items = self.values.items()
-
         result = []
-        for k, v in items:
+        for k in self.values:
             # Check if is a single value dict (custom empty key)
-            if not k or k == MetricDict.EMPTY_KEY:
-                key = None
-            else:
-                key = decoder.decode(k)
+            key = {} if k == MetricDict.EMPTY_KEY else orjson.loads(k)
             result.append((key, self.get(k)))
 
         return result
@@ -163,9 +174,8 @@ class Collector(object):
             isinstance(other, self.__class__)
             and self.name == other.name
             and self.doc == other.doc  # type: ignore
-            and type(self) == type(other)  # type: ignore
             and self.values == other.values  # type: ignore
-        )  # type: ignore
+        )
 
 
 class Counter(Collector):
@@ -185,22 +195,22 @@ class Counter(Collector):
     kind = MetricsTypes.counter
 
     def get(self, labels: LabelsType) -> NumericValueType:
-        """ Get the Counter value matching an arbitrary group of labels.
+        """Get the Counter value matching an arbitrary group of labels.
 
         :raises: KeyError if an item with matching labels is not present.
         """
         return self.get_value(labels)
 
     def set(self, labels: LabelsType, value: NumericValueType) -> None:
-        """ Set the counter to an arbitrary value. """
+        """Set the counter to an arbitrary value."""
         self.set_value(labels, value)
 
     def inc(self, labels: LabelsType) -> None:
-        """ Increments the counter by 1."""
+        """Increments the counter by 1."""
         self.add(labels, 1)
 
     def add(self, labels: LabelsType, value: NumericValueType) -> None:
-        """ Add the given value to the counter.
+        """Add the given value to the counter.
 
         :raises: ValueError if the value is negative. Counters can only
           increase.
@@ -238,26 +248,26 @@ class Gauge(Collector):
     kind = MetricsTypes.gauge
 
     def set(self, labels: LabelsType, value: NumericValueType) -> None:
-        """ Set the gauge to an arbitrary value."""
+        """Set the gauge to an arbitrary value."""
         self.set_value(labels, value)
 
     def get(self, labels: LabelsType) -> NumericValueType:
-        """ Get the gauge value matching an arbitrary group of labels.
+        """Get the gauge value matching an arbitrary group of labels.
 
         :raises: KeyError if an item with matching labels is not present.
         """
         return self.get_value(labels)
 
     def inc(self, labels: LabelsType) -> None:
-        """ Increments the gauge by 1."""
+        """Increments the gauge by 1."""
         self.add(labels, 1)
 
     def dec(self, labels: LabelsType) -> None:
-        """ Decrement the gauge by 1."""
+        """Decrement the gauge by 1."""
         self.add(labels, -1)
 
     def add(self, labels: LabelsType, value: NumericValueType) -> None:
-        """ Add the given value to the Gauge.
+        """Add the given value to the Gauge.
 
         The value can be negative, resulting in a decrease of the gauge.
         """
@@ -274,7 +284,7 @@ class Gauge(Collector):
         self.set_value(labels, current + value)
 
     def sub(self, labels: LabelsType, value: NumericValueType) -> None:
-        """ Subtract the given value from the Gauge.
+        """Subtract the given value from the Gauge.
 
         The value can be negative, resulting in an increase of the gauge.
         """
@@ -300,7 +310,7 @@ class Summary(Collector):
     kind = MetricsTypes.summary
 
     REPR_STR = "summary"
-    DEFAULT_INVARIANTS = [(0.50, 0.05), (0.90, 0.01), (0.99, 0.001)]
+    DEFAULT_INVARIANTS = ((0.50, 0.05), (0.90, 0.01), (0.99, 0.001))
     SUM_KEY = "sum"
     COUNT_KEY = "count"
 
@@ -309,13 +319,14 @@ class Summary(Collector):
         name: str,
         doc: str,
         const_labels: LabelsType = None,
+        registry: "Registry" = None,
         invariants: Sequence[Tuple[float, float]] = DEFAULT_INVARIANTS,
     ) -> None:
-        super().__init__(name, doc, const_labels=const_labels)
+        super().__init__(name, doc, const_labels=const_labels, registry=registry)
         self.invariants = invariants
 
     def add(self, labels: LabelsType, value: NumericValueType) -> None:
-        """ Add a single observation to the summary """
+        """Add a single observation to the summary"""
 
         value = cast(Union[float, int], value)  # typing check, no runtime behaviour.
         if type(value) not in (float, int):
@@ -341,21 +352,20 @@ class Summary(Collector):
 
         :raises: KeyError if an item with matching labels is not present.
         """
-        return_data = (
-            collections.OrderedDict()
-        )  # type: Dict[Union[float, str], NumericValueType]
+        return_data = OrderedDict()  # type: Dict[Union[float, str], NumericValueType]
 
-        e = self.get_value(labels)
-        e = cast(Any, e)  # typing check, no runtime behaviour.
+        e = self.get_value(labels)  # type: quantile.Estimator
 
-        # Set invariants data (default to 0.50, 0.90 and 0.99)
-        for i in e._invariants:  # type: ignore
-            q = i._quantile
-            return_data[q] = e.query(q)  # type: ignore
+        # Get invariants data
+        for i in e._invariants:  # pylint: disable=protected-access
+            q = i._quantile  # pylint: disable=protected-access
+            return_data[q] = e.query(q)
 
         # Set sum and count
-        return_data[self.COUNT_KEY] = e._observations  # type: ignore
-        return_data[self.SUM_KEY] = e._sum  # type: ignore
+        return_data[
+            self.COUNT_KEY
+        ] = e._observations  # pylint: disable=protected-access
+        return_data[self.SUM_KEY] = e._sum  # pylint: disable=protected-access
 
         return return_data
 
@@ -405,13 +415,14 @@ class Histogram(Collector):
         name: str,
         doc: str,
         const_labels: LabelsType = None,
+        registry: "Registry" = None,
         buckets: Sequence[float] = DEFAULT_BUCKETS,
     ) -> None:
-        super().__init__(name, doc, const_labels=const_labels)
+        super().__init__(name, doc, const_labels=const_labels, registry=registry)
         self.upper_bounds = buckets
 
     def add(self, labels: LabelsType, value: NumericValueType) -> None:
-        """ Add a single observation to the histogram """
+        """Add a single observation to the histogram"""
 
         value = cast(Union[float, int], value)  # typing check, no runtime behaviour.
         if type(value) not in (float, int):
@@ -438,9 +449,7 @@ class Histogram(Collector):
 
         :raises: KeyError if an item with matching labels is not present.
         """
-        return_data = (
-            collections.OrderedDict()
-        )  # type: Dict[Union[float, str], NumericValueType]
+        return_data = OrderedDict()  # type: Dict[Union[float, str], NumericValueType]
 
         h = self.get_value(labels)
         h = cast(histogram.Histogram, h)  # typing check, no runtime behaviour.
@@ -453,3 +462,82 @@ class Histogram(Collector):
         return_data[self.SUM_KEY] = h.sum
 
         return return_data
+
+
+# The Registry class exists in this module as part of a strategy to avoid
+# circular imports (mostly caused by type annotations).
+
+
+class Registry:
+    """This class implements a container to hold metrics collectors.
+
+    Collectors in the registry must comply with the Collector interface
+    which means that they inherit from the base Collector object and implement
+    a no-argument method called 'get_all' that returns a list of Metric
+    instance objects.
+    """
+
+    def __init__(self) -> None:
+        self.collectors = {}  # type: Dict[str, Collector]
+
+    def register(self, collector: Collector) -> None:
+        """Register a collector into the container.
+
+        The registry provides a container that can be used to access all
+        metrics when exposing them into a specific format.
+
+        :param collector: A collector to register in the registry.
+
+        :raises: TypeError if collector is not an instance of
+          :class:`Collector`.
+
+        :raises: ValueError if collector is already registered.
+        """
+        if not isinstance(collector, Collector):
+            raise TypeError(f"Invalid collector type: {collector}")
+
+        if collector.name in self.collectors:
+            raise ValueError(f"A collector for {collector.name} is already registered")
+
+        self.collectors[collector.name] = collector
+
+    def deregister(self, name: str) -> None:
+        """Deregister a collector.
+
+        This will stop the collector metrics from being emitted.
+
+        :param name: The name of the collector to deregister.
+
+        :raises: KeyError if collector is not already registered.
+        """
+        del self.collectors[name]
+
+    def get(self, name: str) -> Collector:
+        """Get a collector by name.
+
+        :param name: The name of the collector to fetch.
+
+        :raises: KeyError if collector is not found.
+        """
+        return self.collectors[name]
+
+    def get_all(self) -> List[Collector]:
+        """Return a list of all collectors"""
+        return list(self.collectors.values())
+
+    def clear(self):
+        """Clear all registered collectors.
+
+        This function is mainly of use in tests to reset the default registry
+        which may be used in multiple tests.
+        """
+        for name in list(self.collectors.keys()):
+            self.deregister(name)
+
+
+REGISTRY = Registry()
+
+
+def get_registry() -> Registry:
+    """Return the default Registry"""
+    return REGISTRY

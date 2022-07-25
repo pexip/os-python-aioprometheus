@@ -1,4 +1,4 @@
-name: Python Package Workflow
+name: CI Pipeline
 
 on:
   push:
@@ -9,20 +9,22 @@ on:
 jobs:
   build:
 
+    name: "Python ${{ matrix.python-version }}"
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: [3.6, 3.7, 3.8]
+        python-version: ["3.6", "3.7", "3.8", "3.9", "3.10"]
 
     steps:
     - uses: actions/checkout@v2
     - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v1
+      uses: actions/setup-python@v2
       with:
         python-version: ${{ matrix.python-version }}
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
+        python -m pip install wheel
         pip install -r requirements.dev.txt
         pip install -r requirements.txt
     - name: Cache pip dependencies
@@ -37,16 +39,31 @@ jobs:
     - name: Check code style
       run: |
         make check-style
-    - name: Install package
+    - name: Install package on Python 3.6
+      # Quart is not supported on Python 3.6
+      if: ${{ matrix.python-version == '3.6' }}
       run: |
-        pip install .[aiohttp,binary]
+        echo "Python version is: ${{ matrix.python-version }}"
+        pip install .[aiohttp,binary,starlette]
+    - name: Install package
+      if: ${{ matrix.python-version != '3.6' }}
+      run: |
+        echo "Python version is: ${{ matrix.python-version }}"
+        pip install .[aiohttp,binary,starlette,quart]
     - name: Run unit tests
       run: |
         make test
     - name: Check code coverage
+      if: ${{ matrix.python-version == '3.9' }}
       run: |
         make coverage
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v2
+      if: ${{ matrix.python-version == '3.9' }}
+      with:
+        fail_ci_if_error: false
     - name: Generate docs
+      if: ${{ matrix.python-version == '3.9' }}
       run: |
         make docs
     - name: Generate package
