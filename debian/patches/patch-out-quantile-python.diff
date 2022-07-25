@@ -4,7 +4,8 @@ Instead of messing around, we've pulled in the pypi source and patched it into
 aioprometheus.
 --- a/requirements.txt
 +++ b/requirements.txt
-@@ -1 +0,0 @@
+@@ -1,2 +1 @@
+ orjson
 -quantile-python >= 1.1
 --- /dev/null
 +++ b/src/aioprometheus/_quantile.py
@@ -200,27 +201,16 @@ aioprometheus.
 +        self._successor = successor
 --- a/src/aioprometheus/collectors.py
 +++ b/src/aioprometheus/collectors.py
-@@ -3,9 +3,8 @@
- import json
- import re
+@@ -4,7 +4,7 @@
+ from typing import Dict, List, Sequence, Tuple, Union, cast
  
+ import orjson
 -import quantile
--
- from . import histogram
 +from ._quantile import Estimator
- from .metricdict import MetricDict
- from typing import cast, Any, Dict, List, Sequence, Tuple, Union
  
-@@ -23,7 +22,7 @@
+ from aioprometheus.mypy_types import LabelsType, NumericValueType
  
- # typing aliases
- LabelsType = Dict[str, str]
--NumericValueType = Union[int, float, histogram.Histogram, quantile.Estimator]
-+NumericValueType = Union[int, float, histogram.Histogram, Estimator]
- ValueType = Union[str, NumericValueType]
- CollectorsType = Union["Counter", "Gauge", "Histogram", "Summary"]
- 
-@@ -325,7 +324,7 @@
+@@ -336,7 +336,7 @@
              e = self.get_value(labels)
          except KeyError:
              # Initialize quantile estimator
@@ -229,33 +219,3 @@ aioprometheus.
              self.set_value(labels, e)
  
          e.observe(float(value))  # type: ignore
---- a/setup.py
-+++ b/setup.py
-@@ -22,18 +22,6 @@
- with open('README.rst', 'r') as f:
-     readme = f.read()
- 
--def parse_requirements(filename):
--    ''' Load requirements from a pip requirements file '''
--    with open(filename, 'r') as fd:
--        lines = []
--        for line in fd:
--            line = line.strip()
--            if line and not line.startswith("#"):
--                lines.append(line)
--    return lines
--
--requirements = parse_requirements('requirements.txt')
--
- 
- if __name__ == "__main__":
- 
-@@ -49,7 +37,7 @@
-         url="https://github.com/claws/aioprometheus",
-         package_dir={'': 'src'},
-         packages=find_packages('src'),
--        install_requires=requirements,
-+        install_requires=[],
-         extras_require={
-             "aiohttp": ["aiohttp>=3.3.2"],
-             "binary": ["prometheus-metrics-proto>=18.1.1"],
