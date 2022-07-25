@@ -1,6 +1,8 @@
 python-aioprometheus (22.5.0-0pexip1) pexip-bullseye; urgency=medium
 
   * Import new upstream version.
+  * Revert upstream patch b2cf20597fa2f49e046d91483e31f1431b6bd95c
+    to avoid needing orjson, which needs python rust tooling.
 
  -- Mark Hymers <mark.hymers@pexip.com>  Mon, 25 Jul 2022 15:28:20 +0100
 

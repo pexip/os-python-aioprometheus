@@ -1,7 +1,9 @@
 --- a/requirements.txt
 +++ b/requirements.txt
-@@ -1 +0,0 @@
+@@ -1 +1,2 @@
 -orjson
++
++
 --- a/src/aioprometheus/collectors.py
 +++ b/src/aioprometheus/collectors.py
 @@ -1,9 +1,9 @@
