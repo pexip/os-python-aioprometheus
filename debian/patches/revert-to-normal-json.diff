@@ -1,0 +1,97 @@
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -1 +0,0 @@
+-orjson
+--- a/src/aioprometheus/collectors.py
++++ b/src/aioprometheus/collectors.py
+@@ -1,9 +1,9 @@
+ import enum
++import json
+ import re
+ from collections import OrderedDict
+ from typing import Dict, List, Sequence, Tuple, Union, cast
+ 
+-import orjson
+ from ._quantile import Estimator
+ 
+ from aioprometheus.mypy_types import LabelsType, NumericValueType
+@@ -11,6 +11,11 @@
+ from . import histogram
+ from .metricdict import MetricDict
+ 
++# Used to return the ordered pairs (which is not necessary but is useful
++# for consistency).
++decoder = json.JSONDecoder(object_pairs_hook=OrderedDict)
++
++
+ METRIC_NAME_RE = re.compile(r"^[a-zA-Z_:][a-zA-Z0-9_:]*$")
+ RESTRICTED_LABELS_NAMES = ("job",)
+ RESTRICTED_LABELS_PREFIXES = ("__",)
+@@ -161,10 +166,16 @@
+         a dict of labels and the second element is the value of the metric
+         itself.
+         """
++        items = self.values.items()
++
+         result = []
+-        for k in self.values:
++        for k, _v in items:
++            key = {}  # type: LabelsType
+             # Check if is a single value dict (custom empty key)
+-            key = {} if k == MetricDict.EMPTY_KEY else orjson.loads(k)
++            if not k or k == MetricDict.EMPTY_KEY:
++                pass
++            else:
++                key = decoder.decode(k)
+             result.append((key, self.get(k)))
+ 
+         return result
+--- a/src/aioprometheus/metricdict.py
++++ b/src/aioprometheus/metricdict.py
+@@ -1,8 +1,7 @@
++import json
+ import re
+ from collections.abc import MutableMapping
+ 
+-import orjson
+-
+ # Sometimes python will access by string for example iterating objects, and
+ # it has this notation
+ regex = re.compile(r"\{.*:.*,?\}")
+@@ -44,12 +43,10 @@
+ 
+         # Python accesses by string key so we allow if is str and
+         # 'our custom' format
+-        if isinstance(key, bytes) and regex.match(key.decode()):
++        if isinstance(key, str) and regex.match(key):
+             return key
+ 
+         if not isinstance(key, dict):
+             raise TypeError("Only accepts dicts as keys")
+ 
+-        return orjson.dumps(
+-            key, option=(orjson.OPT_NON_STR_KEYS | orjson.OPT_SORT_KEYS)
+-        )
++        return json.dumps(key, sort_keys=True)
+--- a/tests/test_metricdict.py
++++ b/tests/test_metricdict.py
+@@ -68,8 +68,8 @@
+ 
+     def test_access_by_str(self):
+         label = {"b": 2, "c": 3, "a": 1}
+-        access_key = b'{"a":1,"b":2,"c":3}'
+-        bad_access_key = b'{"b":2,"c":3,"a":1}'
++        access_key = '{"a": 1, "b": 2, "c": 3}'
++        bad_access_key = '{"b": 2, "c": 3, "a": 1}'
+         value = 100
+ 
+         metrics = MetricDict()
+@@ -86,7 +86,7 @@
+         # Access ok but wrong key by order
+         with self.assertRaises(KeyError) as context:
+             metrics[bad_access_key]
+-        self.assertEqual(f"{bad_access_key}", str(context.exception))
++        self.assertEqual(f"'{bad_access_key}'", str(context.exception))
+ 
+     def test_empty_key(self):
+         metrics = MetricDict()
