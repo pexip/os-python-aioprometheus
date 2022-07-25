@@ -1,40 +1,49 @@
 #!/usr/bin/env python
 """
-This script implements a fetching function that emulates Prometheus server
+This script implements a fetching function that emulates a Prometheus server
 scraping a metrics service endpoint. The fetching function can randomly
 requests metrics in text or binary formats or you can specify a format to
 use.
 
+This script requires some optional extras to be installed.
+
+.. code-block:: console
+
+    $ pip install aioprometheus[aiohttp,binary]
 
 Usage:
+
+.. code-block:: console
 
     $ python metrics-fetcher.py --url http://0.0.0.0:50123/metrics --format=text --interval=2.0
 
 """
 
-import aiohttp
-import aioprometheus
 import argparse
 import asyncio
 import logging
-import prometheus_metrics_proto
 import random
-from aiohttp.hdrs import ACCEPT, CONTENT_TYPE
-from asyncio.base_events import BaseEventLoop
 
+import aiohttp
+import prometheus_metrics_proto
+from aiohttp.hdrs import ACCEPT, CONTENT_TYPE
+
+from aioprometheus import formats
 
 TEXT = "text"
 BINARY = "binary"
 header_kinds = {
-    TEXT: aioprometheus.formats.TEXT_CONTENT_TYPE,  # 'text/plain',
-    BINARY: aioprometheus.formats.BINARY_CONTENT_TYPE,
+    TEXT: formats.text.TEXT_CONTENT_TYPE,
+    BINARY: formats.binary.BINARY_CONTENT_TYPE,
 }
 
 
 async def fetch_metrics(
-    url: str, fmt: str = None, interval: float = 1.0, loop: BaseEventLoop = None
+    url: str,
+    fmt: str = None,
+    interval: float = 1.0,
 ):
-    """ Fetch metrics from the service endpoint using different formats.
+    """Fetch metrics from the service endpoint using different formats.
 
     This coroutine runs 'n' times, with a brief interval in between, before
     exiting.
@@ -52,8 +61,8 @@ async def fetch_metrics(
             assert resp.status == 200
             content = await resp.read()
             content_type = resp.headers.get(CONTENT_TYPE)
-            print("Content-Type: {}".format(content_type))
-            print("size: {}".format(len(content)))
+            print(f"Content-Type: {content_type}")
+            print(f"size: {len(content)}")
             if choice == "text":
                 print(content.decode())
             else:
@@ -62,11 +71,11 @@ async def fetch_metrics(
                 print(prometheus_metrics_proto.decode(content))
 
     # schedule another fetch
-    loop.call_later(interval, fetch_task, url, fmt, interval, loop)
+    asyncio.get_event_loop().call_later(interval, fetch_task, url, fmt, interval)
 
 
-def fetch_task(url, fmt, interval, loop):
-    asyncio.ensure_future(fetch_metrics(url, fmt, interval, loop))
+def fetch_task(url, fmt, interval):
+    asyncio.ensure_future(fetch_metrics(url, fmt, interval))
 
 
 if __name__ == "__main__":
@@ -100,9 +109,7 @@ if __name__ == "__main__":
     loop = asyncio.get_event_loop()
 
     # create a task to fetch metrics at a periodic interval
-    loop.call_later(
-        args.interval, fetch_task, args.url, args.format, args.interval, loop
-    )
+    loop.call_later(args.interval, fetch_task, args.url, args.format, args.interval)
 
     try:
         loop.run_forever()

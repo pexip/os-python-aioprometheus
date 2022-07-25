@@ -1,73 +1,62 @@
 """
-This module implements an asynchronous Prometheus metrics service.
+This module implements an asynchronous Prometheus metrics export service.
 """
 
-import asyncio
 import logging
 
 try:
     import aiohttp
-    import aiohttp.web
-
-    from aiohttp.hdrs import METH_GET as GET, ACCEPT
-except ImportError:
-    aiohttp = None
-
-from .renderer import render
-from .registry import Registry, CollectorsType
-from typing import Optional, Set
-
+except ImportError as exc:
+    raise ImportError(
+        "`aiohttp` could not be imported. Did you install `aioprometheus` "
+        "with the `aiohttp` extra?"
+    ) from exc
 # imports only used for type annotations
-from asyncio.base_events import BaseEventLoop, Server
 from ssl import SSLContext
+from typing import Optional
 
+import aiohttp.web
+from aiohttp.hdrs import ACCEPT
+from aiohttp.hdrs import METH_GET as GET
+
+from aioprometheus import REGISTRY, Registry, render
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_METRICS_PATH = "/metrics"
 
 
-class Service(object):
+class Service:
     """
     This class implements a Prometheus metrics service that can
     be embedded within asyncio based applications so they can be scraped
     by the Prometheus.io server.
     """
 
-    def __init__(self, registry: Registry = None, loop: BaseEventLoop = None) -> None:
+    def __init__(self, registry: Registry = REGISTRY) -> None:
         """
         Initialise the Prometheus metrics service.
 
-        :param registry: A :class:`CollectorRegistry` instance that will
-          hold all the metrics for this service. If no registry if specified
-          then the default registry is used.
+        :param registry: The :class:`Registry` instance that holds all the
+          metrics that this service should expose. If no registry is specified
+          then the default registry will be used.
 
-        :param loop: The event loop instance to use. If no loop is specified
-          then the default event loop will be retrieved.
-
-        :raises: Exception if the registry object is not an instance of the
-          Registry type.
+        :raises: Exception if the registry object passed is not an instance of
+          the Registry type.
         """
-        if aiohttp is None:
-            raise RuntimeError(
-                "`aiohttp` could not be imported. Did you install `aioprometheus` "
-                "with the `aiohttp` extra?"
-            )
-
-        self.loop = loop or asyncio.get_event_loop()
-        if registry is not None and not isinstance(registry, Registry):
-            raise Exception("registry must be a Registry, got: {}".format(registry))
-        self.registry = registry or Registry()
-        self._site = None  # type: Server
-        self._app = None  # type: aiohttp.web.Application
-        self._runner = None  # type: aiohttp.web.RequestHandlerFactory
-        self._https = None  # type: Optional[bool]
+        if not isinstance(registry, Registry):
+            raise Exception(f"registry must be a Registry, got: {registry}")
+        self.registry = registry
+        self._site = None  # type: Optional[aiohttp.web.TCPSite]
+        self._app = None  # type: Optional[aiohttp.web.Application]
+        self._runner = None  # type: Optional[aiohttp.web.AppRunner]
+        self._https = False
         self._root_url = "/"
         self._metrics_url = None  # type: Optional[str]
 
     @property
     def base_url(self) -> str:
-        """ Return the base service url
+        """Return the base service url
 
         :raises: Exception if the server has not been started.
 
@@ -78,16 +67,22 @@ class Service(object):
                 "No URL available, Prometheus metrics server is not running"
             )
 
+        # Keep mypy happy by checking runner is not None.
+        if self._runner is None:
+            raise Exception(
+                "No URL available, Prometheus metrics server is not running"
+            )
+
         # IPv4 address returns a 2-tuple, IPv6 returns a 4-tuple
         host, port, *_ = self._runner.addresses[0]
-        scheme = "http{}".format("s" if self._https else "")
+        scheme = f"http{'s' if self._https else ''}"
         host = host if ":" not in host else f"[{host}]"
         url = f"{scheme}://{host}:{port}"
         return url
 
     @property
     def root_url(self) -> str:
-        """ Return the root service url
+        """Return the root service url
 
         :raises: Exception if the server has not been started.
 
@@ -97,7 +92,7 @@ class Service(object):
 
     @property
     def metrics_url(self) -> str:
-        """ Return the Prometheus metrics url
+        """Return the Prometheus metrics url
 
         :raises: Exception if the server has not been started.
 
@@ -112,7 +107,7 @@ class Service(object):
         ssl: SSLContext = None,
         metrics_url: str = DEFAULT_METRICS_PATH,
     ) -> None:
-        """ Start the prometheus metrics HTTP(S) server.
+        """Start the prometheus metrics HTTP(S) server.
 
         :param addr: the address to bind the server on. By default this is
           set to an empty string so that the service becomes available on
@@ -120,7 +115,7 @@ class Service(object):
 
         :param port: The port to bind the server on. The default value is 0
           which will cause the server to bind to an ephemeral port. If you
-          want the server to operate on a fixed port then you need to specifiy
+          want the server to operate on a fixed port then you need to specify
           the port.
 
         :param ssl: a sslContext for use with TLS.
@@ -131,7 +126,7 @@ class Service(object):
         :raises: Exception if the server could not be started.
         """
         logger.debug(
-            "Prometheus metrics server starting on %s:%s%s", addr, port, metrics_url
+            f"Prometheus metrics server starting on {addr}:{port}{metrics_url}"
         )
 
         if self._site:
@@ -157,19 +152,19 @@ class Service(object):
             logger.exception("error creating metrics server")
             raise
 
-        logger.debug("Prometheus metrics server started on %s", self.metrics_url)
+        logger.debug(f"Prometheus metrics server started on {self.metrics_url}")
 
-    async def stop(self, wait_duration: float = 1.0) -> None:
-        """ Stop the prometheus metrics HTTP(S) server.
-
-        :param wait_duration: the number of seconds to wait for connections to
-          finish.
-        """
+    async def stop(self) -> None:
+        """Stop the prometheus metrics HTTP(S) server"""
         logger.debug("Prometheus metrics server stopping")
 
         if self._site is None:
             logger.warning("Prometheus metrics server is already stopped")
             return
+
+        # Keep mypy happy by checking runner is not None.
+        if self._runner is None:
+            raise Exception("Prometheus metrics server is not running")
 
         await self._runner.cleanup()
         self._site = None
@@ -177,26 +172,10 @@ class Service(object):
         self._runner = None
         logger.debug("Prometheus metrics server stopped")
 
-    def register(self, collector: CollectorsType) -> None:
-        """ Register a collector.
-
-        :raises: TypeError if collector is not an instance of
-          :class:`Collector`.
-        :raises: ValueError if collector is already registered.
-        """
-        self.registry.register(collector)
-
-    def deregister(self, name: str) -> None:
-        """ Deregister a collector.
-
-        :param name: A collector name to deregister.
-        """
-        self.registry.deregister(name)
-
     async def handle_metrics(
         self, request: "aiohttp.web.Request"
     ) -> "aiohttp.web.Response":
-        """ Handle a request to the metrics route.
+        """Handle a request to the metrics route.
 
         The request is inspected and the most efficient response data format
         is chosen.
@@ -206,22 +185,10 @@ class Service(object):
         )
         return aiohttp.web.Response(body=content, headers=http_headers)
 
-    def accepts(self, request: "aiohttp.web.Request") -> Set[str]:
-        """ Return a sequence of accepts items in the request headers """
-        accepts = set()  # type: Set[str]
-        accept_headers = request.headers.getall(ACCEPT, [])
-        for accept_items in accept_headers:
-            if ";" in accept_items:
-                accept_items = [i.strip() for i in accept_items.split(";")]
-            else:
-                accept_items = [accept_items]
-            accepts.update(accept_items)
-        return accepts
-
     async def handle_root(
         self, request: "aiohttp.web.Request"
     ) -> "aiohttp.web.Response":
-        """ Handle a request to the / route.
+        """Handle a request to the / route.
 
         Serves a trivial page with a link to the metrics.  Use this if ever
         you need to point a health check at your the service.
@@ -233,9 +200,10 @@ class Service(object):
         )
 
     async def handle_robots(
-        self, request: "aiohttp.web.Request"
+        self,
+        request: "aiohttp.web.Request",  # pylint: disable=unused-argument
     ) -> "aiohttp.web.Response":
-        """ Handle a request to /robots.txt
+        """Handle a request to /robots.txt
 
         If a robot ever stumbles on this server, discourage it from indexing.
         """

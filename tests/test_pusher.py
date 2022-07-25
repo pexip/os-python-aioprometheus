@@ -1,54 +1,83 @@
-import asynctest
 import asyncio
+import sys
 
-import aiohttp
+import asynctest
 
-from aioprometheus import Counter, pusher, Registry
+from aioprometheus import REGISTRY, Counter, Registry
 
+try:
+    import aiohttp
+    import aiohttp.web
 
-class TestPusherServer(object):
-    """ This fixture class acts as the Push Gateway.
+    from aioprometheus.pusher import Pusher
 
-    It handles requests and stores various request attributes in the
-    test_results attribute which is later checked in tests.
-    """
-
-    def __init__(self):
-        self.test_results = None
-
-    async def handler(self, request):
-        data = await request.read()
-        self.test_results = {
-            "path": request.path,
-            "headers": request.raw_headers,
-            "method": request.method,
-            "body": data,
-        }
-        resp = aiohttp.web.Response(status=200)
-        return resp
-
-    async def start(self, addr="127.0.0.1", port=None):
-        self._app = aiohttp.web.Application()
-        self._app.router.add_route("*", "/metrics/job/{job}{tail:(/.+)?}", self.handler)
-        self._runner = aiohttp.web.AppRunner(self._app)
-        await self._runner.setup()
-        self._site = aiohttp.web.TCPSite(self._runner, addr, port)
-        await self._site.start()
-        # IPV4 returns a 2-Tuple, IPV6 returns a 4-Tuple
-        _details = self._site._server.sockets[0].getsockname()
-        _host, _port = _details[0:2]
-        self.port = _port
-        self.url = "http://{host}:{port}".format(host=addr, port=_port)
-        # TODO: replace the above with url = self._site.name when aiohttp
-        # issue #3018 is resolved.
-
-    async def stop(self):
-        await self._runner.cleanup()
-        self._site = None
-        self._app = None
-        self._runner = None
+    have_aiohttp = True
+except ImportError:
+    have_aiohttp = False
 
 
+if have_aiohttp:
+
+    class TestPusherServer:
+        """This fixture class acts as the Push Gateway.
+
+        It handles requests and stores various request attributes in the
+        test_results attribute which is later checked in tests.
+        """
+
+        def __init__(self):
+            self.test_results = None
+
+        async def handler(self, request):
+            data = await request.read()
+            self.test_results = {
+                "path": request.path,
+                "headers": request.raw_headers,
+                "method": request.method,
+                "body": data,
+            }
+            resp = aiohttp.web.Response(status=200)
+            return resp
+
+        async def slow_handler(self, request):
+            await asyncio.sleep(3)
+            data = await request.read()
+            self.test_results = {
+                "path": request.path,
+                "headers": request.raw_headers,
+                "method": request.method,
+                "body": data,
+            }
+            resp = aiohttp.web.Response(status=200)
+            return resp
+
+        async def start(self, addr="127.0.0.1", port=None):
+            self._app = aiohttp.web.Application()
+            self._app.router.add_route(
+                "*", "/metrics/job/{job}{tail:(/.+)?}", self.handler
+            )
+            self._app.router.add_route("*", "/api/v1/import/prometheus", self.handler)
+            self._app.router.add_route("*", "/slow", self.slow_handler)
+            self._runner = aiohttp.web.AppRunner(self._app)
+            await self._runner.setup()
+            self._site = aiohttp.web.TCPSite(self._runner, addr, port)
+            await self._site.start()
+            # IPV4 returns a 2-Tuple, IPV6 returns a 4-Tuple
+            _details = self._site._server.sockets[0].getsockname()
+            _host, _port = _details[0:2]
+            self.port = _port
+            self.url = f"http://{addr}:{_port}"
+            # TODO: replace the above with url = self._site.name when aiohttp
+            # issue #3018 is resolved.
+
+        async def stop(self):
+            await self._runner.cleanup()
+            self._site = None
+            self._app = None
+            self._runner = None
+
+
+@asynctest.skipUnless(have_aiohttp, "aiohttp library is not available")
 class TestPusher(asynctest.TestCase):
     async def setUp(self):
         self.server = TestPusherServer()
@@ -56,13 +85,29 @@ class TestPusher(asynctest.TestCase):
 
     async def tearDown(self):
         await self.server.stop()
+        REGISTRY.clear()
+
+    async def test_push_job_ping_victoriametrics(self):
+        job_name = "my-job"
+
+        # Create a pusher with the path for VictoriaMetrics
+        p = Pusher(job_name, self.server.url, path="/api/v1/import/prometheus")
+        registry = Registry()
+        c = Counter("total_requests", "Total requests.", {}, registry=registry)
+
+        c.inc({"url": "/p/user"})
+
+        # Push to the pushgateway
+        resp = await p.replace(registry)
+        self.assertEqual(resp.status, 200)
+
+        self.assertEqual("/api/v1/import/prometheus", self.server.test_results["path"])
 
     async def test_push_job_ping(self):
         job_name = "my-job"
-        p = pusher.Pusher(job_name, self.server.url)
+        p = Pusher(job_name, self.server.url)
         registry = Registry()
-        c = Counter("total_requests", "Total requests.", {})
-        registry.register(c)
+        c = Counter("total_requests", "Total requests.", {}, registry=registry)
 
         c.inc({"url": "/p/user"})
 
@@ -76,12 +121,13 @@ class TestPusher(asynctest.TestCase):
         # See https://github.com/prometheus/pushgateway/blob/master/README.md#url
         # for encoding rules.
         job_name = "my-job"
-        p = pusher.Pusher(
-            job_name, self.server.url, grouping_key={"instance": "127.0.0.1:1234"},
+        p = Pusher(
+            job_name,
+            self.server.url,
+            grouping_key={"instance": "127.0.0.1:1234"},
         )
         registry = Registry()
-        c = Counter("total_requests", "Total requests.", {})
-        registry.register(c)
+        c = Counter("total_requests", "Total requests.", {}, registry=registry)
 
         c.inc({})
 
@@ -98,12 +144,13 @@ class TestPusher(asynctest.TestCase):
         # See https://github.com/prometheus/pushgateway/blob/master/README.md#url
         # for encoding rules.
         job_name = "example"
-        p = pusher.Pusher(
-            job_name, self.server.url, grouping_key={"first": "", "second": "foo"},
+        p = Pusher(
+            job_name,
+            self.server.url,
+            grouping_key={"first": "", "second": "foo"},
         )
         registry = Registry()
-        c = Counter("example_total", "Total examples", {})
-        registry.register(c)
+        c = Counter("example_total", "Total examples", {}, registry=registry)
 
         c.inc({})
 
@@ -120,10 +167,13 @@ class TestPusher(asynctest.TestCase):
         # See https://github.com/prometheus/pushgateway/blob/master/README.md#url
         # for encoding rules.
         job_name = "directory_cleaner"
-        p = pusher.Pusher(job_name, self.server.url, grouping_key={"path": "/var/tmp"},)
+        p = Pusher(
+            job_name,
+            self.server.url,
+            grouping_key={"path": "/var/tmp"},
+        )
         registry = Registry()
-        c = Counter("exec_total", "Total executions", {})
-        registry.register(c)
+        c = Counter("exec_total", "Total executions", {}, registry=registry)
 
         c.inc({})
 
@@ -139,10 +189,9 @@ class TestPusher(asynctest.TestCase):
 
     async def test_push_add(self):
         job_name = "my-job"
-        p = pusher.Pusher(job_name, self.server.url)
-        registry = Registry()
+        p = Pusher(job_name, self.server.url)
+
         counter = Counter("counter_test", "A counter.", {"type": "counter"})
-        registry.register(counter)
 
         counter_data = (({"c_sample": "1", "c_subsample": "b"}, 400),)
 
@@ -160,7 +209,7 @@ class TestPusher(asynctest.TestCase):
         #                 b'\x00\x00\x00\x00\x00y@')
 
         # Push to the pushgateway
-        resp = await p.add(registry)
+        resp = await p.add(REGISTRY)
         self.assertEqual(resp.status, 200)
 
         self.assertEqual("/metrics/job/my-job", self.server.test_results["path"])
@@ -169,10 +218,9 @@ class TestPusher(asynctest.TestCase):
 
     async def test_push_replace(self):
         job_name = "my-job"
-        p = pusher.Pusher(job_name, self.server.url)
-        registry = Registry()
+        p = Pusher(job_name, self.server.url)
+
         counter = Counter("counter_test", "A counter.", {"type": "counter"})
-        registry.register(counter)
 
         counter_data = (({"c_sample": "1", "c_subsample": "b"}, 400),)
 
@@ -190,7 +238,7 @@ class TestPusher(asynctest.TestCase):
         #                 b'\x00\x00\x00\x00\x00y@')
 
         # Push to the pushgateway
-        resp = await p.replace(registry)
+        resp = await p.replace(REGISTRY)
         self.assertEqual(resp.status, 200)
 
         self.assertEqual("/metrics/job/my-job", self.server.test_results["path"])
@@ -199,10 +247,9 @@ class TestPusher(asynctest.TestCase):
 
     async def test_push_delete(self):
         job_name = "my-job"
-        p = pusher.Pusher(job_name, self.server.url)
-        registry = Registry()
+        p = Pusher(job_name, self.server.url)
+
         counter = Counter("counter_test", "A counter.", {"type": "counter"})
-        registry.register(counter)
 
         counter_data = (({"c_sample": "1", "c_subsample": "b"}, 400),)
 
@@ -220,9 +267,36 @@ class TestPusher(asynctest.TestCase):
         #                 b'\x00\x00\x00\x00\x00\x00y@')
 
         # Push to the pushgateway
-        resp = await p.delete(registry)
+        resp = await p.delete(REGISTRY)
         self.assertEqual(resp.status, 200)
 
         self.assertEqual("/metrics/job/my-job", self.server.test_results["path"])
         self.assertEqual("DELETE", self.server.test_results["method"])
         self.assertEqual(valid_result, self.server.test_results["body"])
+
+    @asynctest.skipUnless(sys.version_info > (3, 8, 0), "requires 3.8+")
+    async def test_push_timeout(self):
+        job_name = "my-job"
+        p = Pusher(job_name, self.server.url, path="/slow")
+
+        counter = Counter("counter_test", "A counter.")
+        counter.inc({})
+
+        try:
+            import asyncio.exceptions
+        except:
+            self.skipTest("requires python 3.8+")
+            return
+
+        timeout = aiohttp.ClientTimeout(total=0.5)
+        with self.assertRaises(asyncio.exceptions.TimeoutError):
+            await p.delete(REGISTRY, timeout=timeout)
+
+        with self.assertRaises(asyncio.exceptions.TimeoutError):
+            await p.replace(REGISTRY, timeout=timeout)
+
+        with self.assertRaises(asyncio.exceptions.TimeoutError):
+            await p.add(REGISTRY, timeout=timeout)
+
+        with self.assertRaises(asyncio.exceptions.TimeoutError):
+            await p.replace(REGISTRY, timeout=timeout)

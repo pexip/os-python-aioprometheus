@@ -1,11 +1,12 @@
-from .collectors import Collector, Counter, Gauge, Summary, Histogram
+from .collectors import REGISTRY, Counter, Gauge, Histogram, Registry, Summary
 from .decorators import count_exceptions, inprogress, timer
-from . import formats
-from . import pusher
 from .negotiator import negotiate
-from .registry import Registry, CollectorRegistry
-from .service import Service
 from .renderer import render
 
+# To avoid circular imports issues asgi must be imported after other modules
+from .asgi.middleware import MetricsMiddleware  # isort:skip
 
-__version__ = "20.0.1"
+# The 'pusher' and 'service'  modules must be explicitly imported by package
+# users as they depend on optional extras.
+
+__version__ = "22.5.0"

@@ -3,25 +3,29 @@ This module implements a formatter that emits metrics in a binary (Google
 Protocol Buffers) format.
 """
 
+# imports only used for type annotations
+from typing import Callable, List, Optional, cast
+
 import prometheus_metrics_proto as pmp
 
-from .base import IFormatter
-from ..collectors import Counter, Gauge, Summary, Histogram
-from typing import cast, Callable, Dict, List, Tuple, Union
+from aioprometheus.collectors import (
+    Collector,
+    Counter,
+    Gauge,
+    Histogram,
+    Registry,
+    Summary,
+)
+from aioprometheus.mypy_types import (
+    HistogramDictType,
+    LabelsType,
+    MetricTupleType,
+    SummaryDictType,
+)
 
-# imports only used for type annotations
-from aioprometheus.registry import CollectorRegistry
+from .base import IFormatter
 
 # typing aliases
-LabelsType = Dict[str, str]
-NumericValueType = Union[int, float]
-SummaryDictKeyType = Union[float, str]  # e.g. sum, 0.25, etc
-SummaryDictType = Dict[SummaryDictKeyType, NumericValueType]
-HistogramDictKeyType = Union[float, str]  # e.g. sum, 0.25, etc
-HistogramDictType = Dict[HistogramDictKeyType, NumericValueType]
-CollectorsType = Union[Counter, Gauge, Histogram, Summary]
-MetricValueType = Union[float, SummaryDictType, HistogramDictType]
-MetricTupleType = Tuple[LabelsType, MetricValueType]
 FormatterFuncType = Callable[[MetricTupleType, str, LabelsType], pmp.Metric]
 
 
@@ -34,7 +38,7 @@ BINARY_ACCEPTS = set(BINARY_CONTENT_TYPE.split("; "))
 
 
 class BinaryFormatter(IFormatter):
-    """ This formatter encodes into the Protocol Buffers binary format """
+    """This formatter encodes into the Protocol Buffers binary format"""
 
     def __init__(self, timestamp: bool = False) -> None:
         """
@@ -42,15 +46,15 @@ class BinaryFormatter(IFormatter):
           to metric.
         """
         self.timestamp = timestamp
-        self._headers = {"Content-Type": BINARY_CONTENT_TYPE}
 
-    def get_headers(self) -> Dict[str, str]:
-        return self._headers
+    def get_headers(self) -> LabelsType:
+        """Returns a dict of HTTP headers for this response format"""
+        return {"Content-Type": BINARY_CONTENT_TYPE}
 
     def _format_counter(
         self, counter: MetricTupleType, name: str, const_labels: LabelsType
     ) -> pmp.Metric:
-        """ Create a Counter metric instance.
+        """Create a Counter metric instance.
 
         :param counter: a 2-tuple containing labels and the counter value.
         :param name: the metric name.
@@ -72,7 +76,7 @@ class BinaryFormatter(IFormatter):
     def _format_gauge(
         self, gauge: MetricTupleType, name: str, const_labels: LabelsType
     ) -> pmp.Metric:
-        """ Create a Gauge metric instance.
+        """Create a Gauge metric instance.
 
         :param gauge: a 2-tuple containing labels and the gauge value.
         :param name: the metric name.
@@ -94,7 +98,7 @@ class BinaryFormatter(IFormatter):
     def _format_summary(
         self, summary: MetricTupleType, name: str, const_labels: LabelsType
     ) -> pmp.Metric:
-        """ Create a Summary metric instance.
+        """Create a Summary metric instance.
 
         :param summary: a 2-tuple containing labels and a dict representing
           the summary value. The dict contains keys for each quantile as
@@ -147,14 +151,14 @@ class BinaryFormatter(IFormatter):
 
         return metric
 
-    def marshall_collector(self, collector: CollectorsType) -> pmp.MetricFamily:
+    def marshall_collector(self, collector: Collector) -> pmp.MetricFamily:
         """
         Marshalls a collector into a :class:`MetricFamily` object representing
         the metrics in the collector.
 
         :return: a :class:`MetricFamily` object
         """
-        exec_method = None  # type: FormatterFuncType
+        exec_method = None  # type: Optional[FormatterFuncType]
         if isinstance(collector, Counter):
             metric_type = pmp.COUNTER
             exec_method = self._format_counter
@@ -182,8 +186,8 @@ class BinaryFormatter(IFormatter):
 
         return mf
 
-    def marshall(self, registry: CollectorRegistry) -> bytes:
-        """ Marshall the collectors in the registry into binary protocol
+    def marshall(self, registry: Registry) -> bytes:
+        """Marshall the collectors in the registry into binary protocol
         buffer format.
 
         The Prometheus metrics parser expects each metric (MetricFamily) to

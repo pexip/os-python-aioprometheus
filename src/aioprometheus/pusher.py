@@ -1,35 +1,35 @@
-import asyncio
+import base64
+
+# imports only used for type annotations
+from urllib.parse import quote_plus, urljoin
 
 try:
     import aiohttp
-    import aiohttp.web
-except ImportError as err:
-    aiohttp = None
+except ImportError as exc:
+    raise ImportError(
+        "`aiohttp` could not be imported. Did you install `aioprometheus` "
+        "with the `aiohttp` extra?"
+    ) from exc
 
-import base64
-from urllib.parse import quote_plus, urljoin
-from .formats import text
-
-# imports only used for type annotations
-from asyncio.base_events import BaseEventLoop
-from .registry import CollectorRegistry
+from aioprometheus import REGISTRY, Registry
+from aioprometheus.formats import text
 
 
-class Pusher(object):
+class Pusher:
     """
     This class can be used in applications that can't support the
     standard pull strategy. The pusher object pushes the metrics
     to a push-gateway which can be scraped by Prometheus.
     """
 
-    PATH = "/metrics"
+    PROMETHEUS_PATH = "/metrics"
 
     def __init__(
         self,
         job_name: str,
         addr: str,
         grouping_key: dict = None,
-        loop: BaseEventLoop = None,
+        path: str = "/metrics",
     ) -> None:
         """
 
@@ -44,13 +44,11 @@ class Pusher(object):
 
         :param loop: The event loop instance to use. If no loop is specified
           then the default event loop will be used.
-        """
-        if aiohttp is None:
-            raise RuntimeError(
-                "`aiohttp` could not be imported. Did you install `aioprometheus` "
-                "with the `aiohttp` extra?"
-            )
 
+        :param path: The path to use, by default this will be /metrics for
+           prometheus but can be optionally specified to work with other
+           platforms such as VictoriaMetrics.
+        """
         self.job_name = job_name
 
         if grouping_key is None:
@@ -58,29 +56,34 @@ class Pusher(object):
         self.grouping_key = grouping_key
 
         self.addr = addr
-        self.loop = loop or asyncio.get_event_loop()
         self.formatter = text.TextFormatter()
         self.headers = self.formatter.get_headers()
 
-        path = self.PATH + "".join(
-            _escape_grouping_key(str(k), str(v))
-            for k, v in [("job", job_name)] + sorted(grouping_key.items())
-        )
+        if path == self.PROMETHEUS_PATH:
+            path = path + "".join(
+                _escape_grouping_key(str(k), str(v))
+                for k, v in [("job", job_name)] + sorted(grouping_key.items())
+            )
+
         self.path = urljoin(self.addr, path)
 
-    async def add(self, registry: CollectorRegistry) -> "aiohttp.web.Response":
+    async def add(
+        self, registry: Registry = REGISTRY, **kwargs
+    ) -> "aiohttp.ClientResponse":
         """
         ``add`` works like replace, but only metrics with the same name as the
         newly pushed metrics are replaced.
         """
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(**kwargs) as session:
             payload = self.formatter.marshall(registry)
             async with session.post(
                 self.path, data=payload, headers=self.headers
             ) as resp:
                 return resp
 
-    async def replace(self, registry: CollectorRegistry) -> "aiohttp.web.Response":
+    async def replace(
+        self, registry: Registry = REGISTRY, **kwargs
+    ) -> "aiohttp.ClientResponse":
         """
         ``replace`` pushes new values for a group of metrics to the push
         gateway.
@@ -91,19 +94,21 @@ class Pusher(object):
             URL will be replaced with the new metrics value.
 
         """
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(**kwargs) as session:
             payload = self.formatter.marshall(registry)
             async with session.put(
                 self.path, data=payload, headers=self.headers
             ) as resp:
                 return resp
 
-    async def delete(self, registry: CollectorRegistry) -> "aiohttp.web.Response":
+    async def delete(
+        self, registry: Registry = REGISTRY, **kwargs
+    ) -> "aiohttp.ClientResponse":
         """
         ``delete`` deletes metrics from the push gateway. All metrics with
         the grouping key specified in the URL are deleted.
         """
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(**kwargs) as session:
             payload = self.formatter.marshall(registry)
             async with session.delete(
                 self.path, data=payload, headers=self.headers
@@ -115,12 +120,14 @@ def _escape_grouping_key(k, v):
     if v == "":
         # To encode the empty label with base64, you have to use at least one
         # `=` padding character to avoid a `//` or a trailing `/`.
-        return f"/{k}@base64/="
+        grouping_key = f"/{k}@base64/="
     elif "/" in v:
         # The plain (or even URI-encoded) `/` would otherwise be interpreted as
         # a path separator.
         v = base64.urlsafe_b64encode(v.encode("utf-8")).decode()
-        return f"/{k}@base64/{v}"
+        grouping_key = f"/{k}@base64/{v}"
     else:
         v = quote_plus(v)
-        return f"/{k}/{v}"
+        grouping_key = f"/{k}/{v}"
+
+    return grouping_key

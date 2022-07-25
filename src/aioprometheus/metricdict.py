@@ -1,10 +1,7 @@
-import json
 import re
+from collections.abc import MutableMapping
 
-try:
-    from collections.abc import MutableMapping
-except ImportError:
-    from collections import MutableMapping
+import orjson
 
 # Sometimes python will access by string for example iterating objects, and
 # it has this notation
@@ -21,7 +18,7 @@ class MetricDict(MutableMapping):
     EMPTY_KEY = "__EMPTY__"
 
     def __init__(self, *args, **kwargs):
-        self.store = dict()
+        self.store = {}
         self.update(dict(*args, **kwargs))
 
     def __getitem__(self, key):
@@ -47,10 +44,12 @@ class MetricDict(MutableMapping):
 
         # Python accesses by string key so we allow if is str and
         # 'our custom' format
-        if type(key) == str and regex.match(key):
+        if isinstance(key, bytes) and regex.match(key.decode()):
             return key
 
-        if type(key) is not dict:
+        if not isinstance(key, dict):
             raise TypeError("Only accepts dicts as keys")
 
-        return json.dumps(key, sort_keys=True)
+        return orjson.dumps(
+            key, option=(orjson.OPT_NON_STR_KEYS | orjson.OPT_SORT_KEYS)
+        )

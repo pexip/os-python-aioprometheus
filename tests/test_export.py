@@ -1,41 +1,48 @@
 import asynctest
-import aiohttp
-import unittest.mock
-from aiohttp.hdrs import ACCEPT, CONTENT_TYPE
+import asynctest.mock
+
 import aioprometheus
-import prometheus_metrics_proto as pmp
+from aioprometheus import REGISTRY, Counter, Gauge, Histogram, Registry, Summary
+from aioprometheus.formats import text
 
-from aioprometheus import Counter, Gauge, Histogram, Registry, Service, Summary
-from aioprometheus.formats import text, binary
+try:
+    import aiohttp
+    from aiohttp.hdrs import ACCEPT, CONTENT_TYPE
+
+    from aioprometheus.service import Service
+
+    have_aiohttp = True
+except ImportError:
+    have_aiohttp = False
 
 
-TEXT = "text"
-BINARY = "binary"
-format_kinds = {TEXT: text.TEXT_CONTENT_TYPE, BINARY: binary.BINARY_CONTENT_TYPE}
+try:
+    import prometheus_metrics_proto as pmp
+
+    from aioprometheus.formats import binary
+
+    have_pmp = True
+except ImportError:
+    have_pmp = False
 
 
+@asynctest.skipUnless(have_aiohttp, "aiohttp library is not available")
 class TestTextExporter(asynctest.TestCase):
-    async def setUp(self):
-        self.registry = Registry()
-        self.server = Service(registry=self.registry)
-        await self.server.start(addr="127.0.0.1")
-        self.metrics_url = self.server.metrics_url
-        self.root_url = self.server.root_url
-
     async def tearDown(self):
-        await self.server.stop()
+        REGISTRY.clear()
 
-    async def test_invalid_registry(self):
-        """ check only valid registry can be provided """
+    async def test_valid_registry(self):
+        """check only valid registry can be provided"""
         for invalid_registry in ["nope", dict(), list()]:
             with self.assertRaises(Exception) as cm:
                 Service(registry=invalid_registry)
             self.assertIn("registry must be a Registry, got:", str(cm.exception))
 
+        Service()
         Service(registry=Registry())
 
     def test_fetch_url_before_starting_server(self):
-        """ check accessing a URL property raises expection if not available """
+        """check accessing a URL property raises expection if not available"""
         s = Service()
 
         with self.assertRaises(Exception) as cm:
@@ -52,43 +59,31 @@ class TestTextExporter(asynctest.TestCase):
             str(cm.exception),
         )
 
-    def test_register_deregister(self):
-        """ check registering and deregistering metrics """
-        c = Counter("test_counter", "Test Counter.", {"test": "test_counter"})
-        self.server.register(c)
-
-        # Check registering a collector with same name raises an exception
-        c2 = Counter("test_counter", "Another Test Counter.")
-        with self.assertRaises(ValueError) as cm:
-            self.server.register(c2)
-        self.assertIn("is already registered", str(cm.exception))
-
-        self.server.deregister("test_counter")
-
-        # Check deregistering a non-existant collector raises an exception
-        with self.assertRaises(KeyError) as cm:
-            self.server.deregister("test_counter")
-
     async def test_start_started_server(self):
-        """ check starting a started server """
+        """check starting a started server"""
 
-        with unittest.mock.patch.object(
+        s = Service()
+        await s.start(addr="127.0.0.1")
+
+        with asynctest.mock.patch.object(
             aioprometheus.service.logger, "warning"
         ) as mock_warn:
-            await self.server.start(addr="127.0.0.1")
+            await s.start(addr="127.0.0.1")
             self.assertEqual(mock_warn.call_count, 1)
             mock_warn.assert_called_once_with(
                 "Prometheus metrics server is already running"
             )
 
-    async def test_stop_stopped_server(self):
-        """ check stopping a stopped server """
+        await s.stop()
 
-        s = Service(registry=self.registry)
+    async def test_stop_stopped_server(self):
+        """check stopping a stopped server"""
+
+        s = Service()
         await s.start(addr="127.0.0.1")
         await s.stop()
 
-        with unittest.mock.patch.object(
+        with asynctest.mock.patch.object(
             aioprometheus.service.logger, "warning"
         ) as mock_warn:
             await s.stop()
@@ -97,8 +92,11 @@ class TestTextExporter(asynctest.TestCase):
                 "Prometheus metrics server is already stopped"
             )
 
-    async def test_counter(self):
-        """ check counter metric export """
+    async def test_counter_text(self):
+        """check counter metric text export"""
+
+        s = Service()
+        await s.start(addr="127.0.0.1")
 
         # Add some metrics
         data = (
@@ -108,7 +106,6 @@ class TestTextExporter(asynctest.TestCase):
             ({"data": 1}, 400),
         )
         c = Counter("test_counter", "Test Counter.", {"test": "test_counter"})
-        self.server.register(c)
 
         for i in data:
             c.set(i[0], i[1])
@@ -121,19 +118,38 @@ test_counter{data="3",test="test_counter"} 300
 """
 
         async with aiohttp.ClientSession() as session:
-
-            # Fetch as text
             async with session.get(
-                self.metrics_url, headers={ACCEPT: text.TEXT_CONTENT_TYPE}
+                s.metrics_url, headers={ACCEPT: text.TEXT_CONTENT_TYPE}
             ) as resp:
                 self.assertEqual(resp.status, 200)
                 content = await resp.read()
                 self.assertEqual(text.TEXT_CONTENT_TYPE, resp.headers.get(CONTENT_TYPE))
                 self.assertEqual(expected_data, content.decode())
 
-            # Fetch as binary
+        await s.stop()
+
+    @asynctest.skipUnless(have_pmp, "prometheus_metrics_proto library is not available")
+    async def test_counter_binary(self):
+        """check counter metric binary export"""
+
+        s = Service()
+        await s.start(addr="127.0.0.1")
+
+        # Add some metrics
+        data = (
+            ({"data": 1}, 100),
+            ({"data": "2"}, 200),
+            ({"data": 3}, 300),
+            ({"data": 1}, 400),
+        )
+        c = Counter("test_counter", "Test Counter.", {"test": "test_counter"})
+
+        for i in data:
+            c.set(i[0], i[1])
+
+        async with aiohttp.ClientSession() as session:
             async with session.get(
-                self.metrics_url, headers={ACCEPT: binary.BINARY_CONTENT_TYPE}
+                s.metrics_url, headers={ACCEPT: binary.BINARY_CONTENT_TYPE}
             ) as resp:
                 self.assertEqual(resp.status, 200)
                 content = await resp.read()
@@ -147,8 +163,13 @@ test_counter{data="3",test="test_counter"} 300
                 self.assertEqual(mf.type, pmp.COUNTER)
                 self.assertEqual(len(mf.metric), 3)
 
-    async def test_gauge(self):
-        """ check gauge metric export """
+        await s.stop()
+
+    async def test_gauge_text(self):
+        """check gauge metric text export"""
+
+        s = Service()
+        await s.start(addr="127.0.0.1")
 
         # Add some metrics
         data = (
@@ -158,7 +179,6 @@ test_counter{data="3",test="test_counter"} 300
             ({"data": 1}, 400),
         )
         g = Gauge("test_gauge", "Test Gauge.", {"test": "test_gauge"})
-        self.server.register(g)
 
         for i in data:
             g.set(i[0], i[1])
@@ -171,19 +191,38 @@ test_gauge{data="3",test="test_gauge"} 300
 """
 
         async with aiohttp.ClientSession() as session:
-
-            # Fetch as text
             async with session.get(
-                self.metrics_url, headers={ACCEPT: text.TEXT_CONTENT_TYPE}
+                s.metrics_url, headers={ACCEPT: text.TEXT_CONTENT_TYPE}
             ) as resp:
                 self.assertEqual(resp.status, 200)
                 content = await resp.read()
                 self.assertEqual(text.TEXT_CONTENT_TYPE, resp.headers.get(CONTENT_TYPE))
                 self.assertEqual(expected_data, content.decode())
 
-            # Fetch as binary
+        await s.stop()
+
+    @asynctest.skipUnless(have_pmp, "prometheus_metrics_proto library is not available")
+    async def test_gauge_binary(self):
+        """check gauge metric binary export"""
+
+        s = Service()
+        await s.start(addr="127.0.0.1")
+
+        # Add some metrics
+        data = (
+            ({"data": 1}, 100),
+            ({"data": "2"}, 200),
+            ({"data": 3}, 300),
+            ({"data": 1}, 400),
+        )
+        g = Gauge("test_gauge", "Test Gauge.", {"test": "test_gauge"})
+
+        for i in data:
+            g.set(i[0], i[1])
+
+        async with aiohttp.ClientSession() as session:
             async with session.get(
-                self.metrics_url, headers={ACCEPT: binary.BINARY_CONTENT_TYPE}
+                s.metrics_url, headers={ACCEPT: binary.BINARY_CONTENT_TYPE}
             ) as resp:
                 self.assertEqual(resp.status, 200)
                 content = await resp.read()
@@ -197,18 +236,22 @@ test_gauge{data="3",test="test_gauge"} 300
                 self.assertEqual(mf.type, pmp.GAUGE)
                 self.assertEqual(len(mf.metric), 3)
 
-    async def test_summary(self):
-        """ check summary metric export """
+        await s.stop()
+
+    async def test_summary_text(self):
+        """check summary metric text export"""
+
+        s = Service()
+        await s.start(addr="127.0.0.1")
 
         # Add some metrics
         data = [3, 5.2, 13, 4]
         label = {"data": 1}
 
-        s = Summary("test_summary", "Test Summary.", {"test": "test_summary"})
-        self.server.register(s)
+        summary = Summary("test_summary", "Test Summary.", {"test": "test_summary"})
 
         for i in data:
-            s.add(label, i)
+            summary.add(label, i)
 
         expected_data = """# HELP test_summary Test Summary.
 # TYPE test_summary summary
@@ -223,16 +266,52 @@ test_summary_sum{data="1",test="test_summary"} 25.2
 
             # Fetch as text
             async with session.get(
-                self.metrics_url, headers={ACCEPT: text.TEXT_CONTENT_TYPE}
+                s.metrics_url, headers={ACCEPT: text.TEXT_CONTENT_TYPE}
             ) as resp:
                 self.assertEqual(resp.status, 200)
                 content = await resp.read()
                 self.assertEqual(text.TEXT_CONTENT_TYPE, resp.headers.get(CONTENT_TYPE))
                 self.assertEqual(expected_data, content.decode())
 
-            # Fetch as binary
+            if have_pmp:
+                # Fetch as binary
+                async with session.get(
+                    s.metrics_url, headers={ACCEPT: binary.BINARY_CONTENT_TYPE}
+                ) as resp:
+                    self.assertEqual(resp.status, 200)
+                    content = await resp.read()
+                    self.assertEqual(
+                        binary.BINARY_CONTENT_TYPE, resp.headers.get(CONTENT_TYPE)
+                    )
+                    metrics = pmp.decode(content)
+                    self.assertEqual(len(metrics), 1)
+                    mf = metrics[0]
+                    self.assertIsInstance(mf, pmp.MetricFamily)
+                    self.assertEqual(mf.type, pmp.SUMMARY)
+                    self.assertEqual(len(mf.metric), 1)
+                    self.assertEqual(len(mf.metric[0].summary.quantile), 3)
+
+        await s.stop()
+
+    @asynctest.skipUnless(have_pmp, "prometheus_metrics_proto library is not available")
+    async def test_summary_binary(self):
+        """check summary metric binary export"""
+
+        s = Service()
+        await s.start(addr="127.0.0.1")
+
+        # Add some metrics
+        data = [3, 5.2, 13, 4]
+        label = {"data": 1}
+
+        summary = Summary("test_summary", "Test Summary.", {"test": "test_summary"})
+
+        for i in data:
+            summary.add(label, i)
+
+        async with aiohttp.ClientSession() as session:
             async with session.get(
-                self.metrics_url, headers={ACCEPT: binary.BINARY_CONTENT_TYPE}
+                s.metrics_url, headers={ACCEPT: binary.BINARY_CONTENT_TYPE}
             ) as resp:
                 self.assertEqual(resp.status, 200)
                 content = await resp.read()
@@ -247,8 +326,13 @@ test_summary_sum{data="1",test="test_summary"} 25.2
                 self.assertEqual(len(mf.metric), 1)
                 self.assertEqual(len(mf.metric[0].summary.quantile), 3)
 
-    async def test_histogram(self):
-        """ check histogram metric export """
+        await s.stop()
+
+    async def test_histogram_text(self):
+        """check histogram metric text export"""
+
+        s = Service()
+        await s.start(addr="127.0.0.1")
 
         # Add some metrics
         data = [3, 5.2, 13, 4]
@@ -260,7 +344,6 @@ test_summary_sum{data="1",test="test_summary"} 25.2
             {"type": "test_histogram"},
             buckets=[5.0, 10.0, 15.0],
         )
-        self.server.register(h)
 
         for i in data:
             h.add(label, i)
@@ -279,16 +362,57 @@ histogram_test_sum{data="1",type="test_histogram"} 25.2
 
             # Fetch as text
             async with session.get(
-                self.metrics_url, headers={ACCEPT: text.TEXT_CONTENT_TYPE}
+                s.metrics_url, headers={ACCEPT: text.TEXT_CONTENT_TYPE}
             ) as resp:
                 self.assertEqual(resp.status, 200)
                 content = await resp.read()
                 self.assertEqual(text.TEXT_CONTENT_TYPE, resp.headers.get(CONTENT_TYPE))
                 self.assertEqual(expected_data, content.decode())
 
-            # Fetch as binary
+            if have_pmp:
+                # Fetch as binary
+                async with session.get(
+                    s.metrics_url, headers={ACCEPT: binary.BINARY_CONTENT_TYPE}
+                ) as resp:
+                    self.assertEqual(resp.status, 200)
+                    content = await resp.read()
+                    self.assertEqual(
+                        binary.BINARY_CONTENT_TYPE, resp.headers.get(CONTENT_TYPE)
+                    )
+                    metrics = pmp.decode(content)
+                    self.assertEqual(len(metrics), 1)
+                    mf = metrics[0]
+                    self.assertIsInstance(mf, pmp.MetricFamily)
+                    self.assertEqual(mf.type, pmp.HISTOGRAM)
+                    self.assertEqual(len(mf.metric), 1)
+                    self.assertEqual(len(mf.metric[0].histogram.bucket), 4)
+
+        await s.stop()
+
+    @asynctest.skipUnless(have_pmp, "prometheus_metrics_proto library is not available")
+    async def test_histogram_binary(self):
+        """check histogram metric binary export"""
+
+        s = Service()
+        await s.start(addr="127.0.0.1")
+
+        # Add some metrics
+        data = [3, 5.2, 13, 4]
+        label = {"data": 1}
+
+        h = Histogram(
+            "histogram_test",
+            "Test Histogram.",
+            {"type": "test_histogram"},
+            buckets=[5.0, 10.0, 15.0],
+        )
+
+        for i in data:
+            h.add(label, i)
+
+        async with aiohttp.ClientSession() as session:
             async with session.get(
-                self.metrics_url, headers={ACCEPT: binary.BINARY_CONTENT_TYPE}
+                s.metrics_url, headers={ACCEPT: binary.BINARY_CONTENT_TYPE}
             ) as resp:
                 self.assertEqual(resp.status, 200)
                 content = await resp.read()
@@ -303,7 +427,13 @@ histogram_test_sum{data="1",type="test_histogram"} 25.2
                 self.assertEqual(len(mf.metric), 1)
                 self.assertEqual(len(mf.metric[0].histogram.bucket), 4)
 
-    async def test_all(self):
+        await s.stop()
+
+    async def test_all_text(self):
+        """check multiple metrics text export"""
+
+        s = Service()
+        await s.start(addr="127.0.0.1")
 
         counter_data = (
             ({"c_sample": "1"}, 100),
@@ -342,11 +472,6 @@ histogram_test_sum{data="1",type="test_histogram"} 25.2
             {"type": "histogram"},
             buckets=[5.0, 10.0, 15.0],
         )
-
-        self.server.register(counter)
-        self.server.register(gauge)
-        self.server.register(summary)
-        self.server.register(histogram)
 
         # Add data
         [counter.set(c[0], c[1]) for c in counter_data]
@@ -420,16 +545,94 @@ summary_test_sum{s_sample="1",s_subsample="b",type="summary"} 98857.0
 
             # Fetch as text
             async with session.get(
-                self.metrics_url, headers={ACCEPT: text.TEXT_CONTENT_TYPE}
+                s.metrics_url, headers={ACCEPT: text.TEXT_CONTENT_TYPE}
             ) as resp:
                 self.assertEqual(resp.status, 200)
                 content = await resp.read()
                 self.assertEqual(text.TEXT_CONTENT_TYPE, resp.headers.get(CONTENT_TYPE))
                 self.assertEqual(expected_data, content.decode())
 
-            # Fetch as binary
+            if have_pmp:
+                # Fetch as binary
+                async with session.get(
+                    s.metrics_url, headers={ACCEPT: binary.BINARY_CONTENT_TYPE}
+                ) as resp:
+                    self.assertEqual(resp.status, 200)
+                    content = await resp.read()
+                    self.assertEqual(
+                        binary.BINARY_CONTENT_TYPE, resp.headers.get(CONTENT_TYPE)
+                    )
+                    metrics = pmp.decode(content)
+                    self.assertEqual(len(metrics), 4)
+                    for mf in metrics:
+                        self.assertIsInstance(mf, pmp.MetricFamily)
+                        if mf.type == pmp.COUNTER:
+                            self.assertEqual(len(mf.metric), 4)
+                        elif mf.type == pmp.GAUGE:
+                            self.assertEqual(len(mf.metric), 4)
+                        elif mf.type == pmp.SUMMARY:
+                            self.assertEqual(len(mf.metric), 4)
+                            self.assertEqual(len(mf.metric[0].summary.quantile), 3)
+                        elif mf.type == pmp.HISTOGRAM:
+                            self.assertEqual(len(mf.metric), 4)
+                            self.assertEqual(len(mf.metric[0].histogram.bucket), 4)
+
+        await s.stop()
+
+    @asynctest.skipUnless(have_pmp, "prometheus_metrics_proto library is not available")
+    async def test_all_binary(self):
+        """check multiple metrics binary export"""
+
+        s = Service()
+        await s.start(addr="127.0.0.1")
+
+        counter_data = (
+            ({"c_sample": "1"}, 100),
+            ({"c_sample": "2"}, 200),
+            ({"c_sample": "3"}, 300),
+            ({"c_sample": "1", "c_subsample": "b"}, 400),
+        )
+
+        gauge_data = (
+            ({"g_sample": "1"}, 500),
+            ({"g_sample": "2"}, 600),
+            ({"g_sample": "3"}, 700),
+            ({"g_sample": "1", "g_subsample": "b"}, 800),
+        )
+
+        summary_data = (
+            ({"s_sample": "1"}, range(1000, 2000, 4)),
+            ({"s_sample": "2"}, range(2000, 3000, 20)),
+            ({"s_sample": "3"}, range(3000, 4000, 13)),
+            ({"s_sample": "1", "s_subsample": "b"}, range(4000, 5000, 47)),
+        )
+
+        histogram_data = (
+            ({"h_sample": "1"}, [3, 14]),
+            ({"h_sample": "2"}, range(1, 20, 2)),
+            ({"h_sample": "3"}, range(1, 20, 2)),
+            ({"h_sample": "1", "h_subsample": "b"}, range(1, 20, 2)),
+        )
+
+        counter = Counter("counter_test", "A counter.", {"type": "counter"})
+        gauge = Gauge("gauge_test", "A gauge.", {"type": "gauge"})
+        summary = Summary("summary_test", "A summary.", {"type": "summary"})
+        histogram = Histogram(
+            "histogram_test",
+            "A histogram.",
+            {"type": "histogram"},
+            buckets=[5.0, 10.0, 15.0],
+        )
+
+        # Add data
+        [counter.set(c[0], c[1]) for c in counter_data]
+        [gauge.set(g[0], g[1]) for g in gauge_data]
+        [summary.add(i[0], s) for i in summary_data for s in i[1]]
+        [histogram.observe(i[0], h) for i in histogram_data for h in i[1]]
+
+        async with aiohttp.ClientSession() as session:
             async with session.get(
-                self.metrics_url, headers={ACCEPT: binary.BINARY_CONTENT_TYPE}
+                s.metrics_url, headers={ACCEPT: binary.BINARY_CONTENT_TYPE}
             ) as resp:
                 self.assertEqual(resp.status, 200)
                 content = await resp.read()
@@ -451,13 +654,17 @@ summary_test_sum{s_sample="1",s_subsample="b",type="summary"} 98857.0
                         self.assertEqual(len(mf.metric), 4)
                         self.assertEqual(len(mf.metric[0].histogram.bucket), 4)
 
+        await s.stop()
+
     async def test_no_accept_header(self):
-        """ check default format is used when no accept header is defined """
+        """check default format is used when no accept header is defined"""
+
+        s = Service()
+        await s.start(addr="127.0.0.1")
 
         # Add some metrics
         data = (({"data": 1}, 100),)
         c = Counter("test_counter", "Test Counter.", {"test": "test_counter"})
-        self.server.register(c)
 
         for i in data:
             c.set(i[0], i[1])
@@ -470,7 +677,7 @@ test_counter{data="1",test="test_counter"} 100
         async with aiohttp.ClientSession() as session:
 
             # Fetch without explicit accept type
-            async with session.get(self.metrics_url) as resp:
+            async with session.get(s.metrics_url) as resp:
                 self.assertEqual(resp.status, 200)
                 content = await resp.read()
                 self.assertEqual(text.TEXT_CONTENT_TYPE, resp.headers.get(CONTENT_TYPE))
@@ -481,16 +688,29 @@ test_counter{data="1",test="test_counter"} 100
             # yet as aiohttp expects headers to be a dict and a value of None
             # is not permitted.
 
+        await s.stop()
+
     async def test_root_route(self):
-        """ check root route returns content """
+        """check root route returns content"""
+        s = Service()
+        await s.start(addr="127.0.0.1")
+
         async with aiohttp.ClientSession() as session:
-            async with session.get(self.root_url) as resp:
+            async with session.get(s.root_url) as resp:
                 self.assertEqual(resp.status, 200)
                 self.assertIn("text/html", resp.headers.get(CONTENT_TYPE))
 
+        await s.stop()
+
     async def test_robots_route(self):
-        """ check robots route returns content """
+        """check robots route returns content"""
+
+        s = Service()
+        await s.start(addr="127.0.0.1")
+
         async with aiohttp.ClientSession() as session:
-            async with session.get(f"{self.root_url}robots.txt") as resp:
+            async with session.get(f"{s.root_url}robots.txt") as resp:
                 self.assertEqual(resp.status, 200)
                 self.assertIn("text/plain", resp.headers.get(CONTENT_TYPE))
+
+        await s.stop()

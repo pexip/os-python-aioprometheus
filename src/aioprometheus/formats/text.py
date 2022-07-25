@@ -1,35 +1,34 @@
 """ This module implements a Prometheus metrics text formatter """
+# imports only used for type annotations
+from typing import Callable, List, Optional, Union, cast
 
-import collections
+from aioprometheus.collectors import (
+    Collector,
+    Counter,
+    Gauge,
+    Histogram,
+    Registry,
+    Summary,
+)
+from aioprometheus.mypy_types import (
+    HistogramDictType,
+    LabelsType,
+    MetricTupleType,
+    NumericValueType,
+    SummaryDictType,
+)
 
 from .base import IFormatter
-from ..collectors import Counter, Gauge, Summary, Histogram
-from typing import cast, Callable, Dict, List, Tuple, Union
-
-# imports only used for type annotations
-from ..registry import CollectorRegistry
 
 # typing aliases
-LabelsType = Dict[str, str]
-NumericValueType = Union[int, float]
-# ValueType = Union[str, NumericValueType]
-SummaryDictKeyType = Union[float, str]  # e.g. sum, 0.25, etc
-SummaryDictType = Dict[SummaryDictKeyType, NumericValueType]
-HistogramDictKeyType = Union[float, str]  # e.g. sum, 0.25, etc
-HistogramDictType = Dict[HistogramDictKeyType, NumericValueType]
-CollectorsType = Union[Counter, Gauge, Histogram, Summary]
-MetricValueType = Union[NumericValueType, SummaryDictType, HistogramDictType]
-MetricTupleType = Tuple[LabelsType, MetricValueType]
 FormatterFuncType = Callable[[MetricTupleType, str, LabelsType], List[str]]
 
 
 HELP_FMT = "# HELP {name} {doc}"
 TYPE_FMT = "# TYPE {name} {kind}"
 COMMENT_FMT = "# {comment}"
-LABEL_FMT = '{key}="{value}"'
 LABEL_SEPARATOR_FMT = ","
 LINE_SEPARATOR_FMT = "\n"
-METRIC_FMT = "{name}{labels} {value} {timestamp}"
 POS_INF = float("inf")
 NEG_INF = float("-inf")
 
@@ -39,7 +38,7 @@ TEXT_ACCEPTS = set(TEXT_CONTENT_TYPE.split("; "))
 
 
 class TextFormatter(IFormatter):
-    """ This formatter encodes into the Text format.
+    """This formatter encodes into the Text format.
 
     The histogram and summary types are difficult to represent in the text
     format. The following conventions apply:
@@ -62,39 +61,37 @@ class TextFormatter(IFormatter):
     """
 
     def __init__(self, timestamp: bool = False) -> None:
-        """ Initialise the text formatter.
-
-        timestamp is a boolean, if you want timestamp in each metric.
+        """
+        :param timestamp: a boolean flag that will add a timestamp to metric
+          when True. Default value is False.
         """
         self.timestamp = timestamp
-        self._headers = {"Content-Type": TEXT_CONTENT_TYPE}
 
-    def get_headers(self) -> Dict[str, str]:
-        return self._headers
+    def get_headers(self) -> LabelsType:
+        """Returns a dict of HTTP headers for this response format"""
+        return {"Content-Type": TEXT_CONTENT_TYPE}
 
     def _format_line(
         self,
         name: str,
         labels: LabelsType,
         value: NumericValueType,
-        const_labels: LabelsType = None,
+        const_labels: LabelsType,
     ) -> str:
 
         labels = self._unify_labels(labels, const_labels, True)
 
         labels_str = ""  # type: str
         if labels:
-            _labels = [LABEL_FMT.format(key=k, value=v) for k, v in labels.items()]
+            _labels = [f'{k}="{v}"' for k, v in labels.items()]
             labels_str = LABEL_SEPARATOR_FMT.join(_labels)
-            labels_str = "{{{labels}}}".format(labels=labels_str)
+            labels_str = f"{{{labels_str}}}"
 
         ts = ""  # type: Union[str, int]
         if self.timestamp:
             ts = self._get_timestamp()
 
-        result = METRIC_FMT.format(
-            name=name, labels=labels_str, value=value, timestamp=ts
-        )
+        result = f"{name}{labels_str} {value} {ts}"
 
         return result.strip()
 
@@ -144,13 +141,13 @@ class TextFormatter(IFormatter):
 
         for k, v in summary_value_dict.items():
             # Start from a fresh dict for the labels (new or with preset data)
-            labels = {}  # type: Dict[str, str]
+            labels = {}  # type: LabelsType
             if summary_labels:
                 labels = summary_labels.copy()
 
             # Quantiles need labels and not special name (like sum and count)
-            if type(k) is not float:
-                name_str = "{0}_{1}".format(name, k)
+            if not isinstance(k, float):
+                name_str = f"{name}_{k}"
             else:
                 labels["quantile"] = str(k)
                 name_str = name
@@ -161,7 +158,7 @@ class TextFormatter(IFormatter):
     def _format_histogram(
         self, histogram: MetricTupleType, name: str, const_labels: LabelsType
     ) -> List[str]:
-        """ Format a histogram into the text format.
+        """Format a histogram into the text format.
 
         Buckets must be sorted and +Inf should be last.
 
@@ -179,16 +176,16 @@ class TextFormatter(IFormatter):
 
         for k, v in histogram_value_dict.items():
             # Stat from a fresh dict for the labels (new or with preset data)
-            labels = {}  # type: Dict[str, str]
+            labels = {}  # type: LabelsType
             if histogram_labels:
                 labels = histogram_labels.copy()
 
             v = float(v)
             # Buckets need labels and not special name (like sum and count)
-            if type(k) is not float:
-                name_str = "{0}_{1}".format(name, k)
+            if not isinstance(k, float):
+                name_str = f"{name}_{k}"
             else:
-                upper_bound = k
+                upper_bound = k  # type: Union[str, float]
                 if upper_bound == POS_INF:
                     upper_bound = "+Inf"
                 elif upper_bound == NEG_INF:
@@ -201,14 +198,14 @@ class TextFormatter(IFormatter):
 
         return results
 
-    def marshall_lines(self, collector: CollectorsType) -> List[str]:
+    def marshall_lines(self, collector: Collector) -> List[str]:
         """
         Marshalls a collector into a sequence of strings representing
         the metrics in the collector.
 
         :return: a list of strings.
         """
-        exec_method = None  # type: FormatterFuncType
+        exec_method = None  # type: Optional[FormatterFuncType]
         if isinstance(collector, Counter):
             exec_method = self._format_counter
         elif isinstance(collector, Gauge):
@@ -221,10 +218,8 @@ class TextFormatter(IFormatter):
             raise TypeError("Not a valid object format")
 
         # create headers
-        help_header = HELP_FMT.format(name=collector.name, doc=collector.doc)
-
-        type_header = TYPE_FMT.format(name=collector.name, kind=collector.kind.name)
-
+        help_header = f"# HELP {collector.name} {collector.doc}"
+        type_header = f"# TYPE {collector.name} {collector.kind.name}"
         # Prepare start headers
         lines = [help_header, type_header]
 
@@ -235,16 +230,16 @@ class TextFormatter(IFormatter):
 
         return lines
 
-    def marshall_collector(self, collector: CollectorsType) -> str:
+    def marshall_collector(self, collector: Collector) -> str:
         """
         Marshalls a collector into a string containing one or more lines
         """
         result = self.marshall_lines(collector)
         return LINE_SEPARATOR_FMT.join(result)
 
-    def marshall(self, registry: CollectorRegistry) -> bytes:
-        """ Marshalls a registry (containing collectors) into a bytes
-        object """
+    def marshall(self, registry: Registry) -> bytes:
+        """Marshalls a registry (containing collectors) into a bytes
+        object"""
 
         blocks = []
         for i in registry.get_all():
