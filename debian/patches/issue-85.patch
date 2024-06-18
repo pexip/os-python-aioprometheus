@@ -21,8 +21,8 @@ index fb8c3d4..d3d24d3 100644
 -        for k in self.values:
 +        for k in list(self.values):
              # Check if is a single value dict (custom empty key)
-             if not k or k == MetricDict.EMPTY_KEY:
-                 pass
+             key = {} if k == MetricDict.EMPTY_KEY else decoder.decode(k)
+             result.append((key, self.get(k)))
 diff --git a/tests/test_metrics.py b/tests/test_metrics.py
 index 8d85a97..b9a216e 100644
 --- a/tests/test_metrics.py

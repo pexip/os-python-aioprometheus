@@ -29,15 +29,12 @@
  METRIC_NAME_RE = re.compile(r"^[a-zA-Z_:][a-zA-Z0-9_:]*$")
  RESTRICTED_LABELS_NAMES = ("job",)
  RESTRICTED_LABELS_PREFIXES = ("__",)
-@@ -164,7 +169,10 @@
+@@ -164,7 +169,7 @@
          result = []
          for k in self.values:
              # Check if is a single value dict (custom empty key)
 -            key = {} if k == MetricDict.EMPTY_KEY else orjson.loads(k)
-+            if not k or k == MetricDict.EMPTY_KEY:
-+                pass
-+            else:
-+                key = decoder.decode(k)
++            key = {} if k == MetricDict.EMPTY_KEY else decoder.decode(k)
              result.append((key, self.get(k)))
  
          return result
