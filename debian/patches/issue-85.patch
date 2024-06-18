@@ -1,0 +1,70 @@
+From 16ea4aff8e560869f4c5b4cc16e495f30fdd8f67 Mon Sep 17 00:00:00 2001
+From: Huw Jones <huw@pexip.com>
+Date: Tue, 18 Jun 2024 13:52:42 +0100
+Subject: [PATCH] collector/BaseCollector/get_all: prevent iteration over
+ modified dict
+
+Fixes https://github.com/claws/aioprometheus/issues/85
+---
+ src/aioprometheus/collectors.py |  2 +-
+ tests/test_metrics.py           | 26 ++++++++++++++++++++++++++
+ 2 files changed, 27 insertions(+), 1 deletion(-)
+
+diff --git a/src/aioprometheus/collectors.py b/src/aioprometheus/collectors.py
+index fb8c3d4..d3d24d3 100644
+--- a/src/aioprometheus/collectors.py
++++ b/src/aioprometheus/collectors.py
+@@ -167,7 +167,7 @@ class Collector:
+         itself.
+         """
+         result = []
+-        for k in self.values:
++        for k in list(self.values):
+             # Check if is a single value dict (custom empty key)
+             if not k or k == MetricDict.EMPTY_KEY:
+                 pass
+diff --git a/tests/test_metrics.py b/tests/test_metrics.py
+index 8d85a97..b9a216e 100644
+--- a/tests/test_metrics.py
++++ b/tests/test_metrics.py
+@@ -1,4 +1,5 @@
+ import unittest
++from threading import Thread
+ 
+ from aioprometheus.collectors import (
+     REGISTRY,
+@@ -166,6 +167,31 @@ class TestCollectorBase(unittest.TestCase):
+         sorted_result = sorted(c.get_all(), key=country_fetcher)
+         self.assertEqual(sorted_data, sorted_result)
+ 
++    def test_get_all_change_iter(self) -> None:
++        """
++        test iterating over get_all when the underlying dict changes
++
++        For https://github.com/claws/aioprometheus/issues/85
++        """
++        c = Collector(**self.default_data)
++
++        # Create a large collection of values to increase the chance of a race
++        for i in range(100000):
++            c.set_value({f"b-{i}": "a"}, i)
++
++        # Now create a thread that will add a huge amount more values
++        def set_more_values():
++            for j in range(10000):
++                c.set_value({f"a-{j}": "a"}, j)
++
++        t = Thread(daemon=True, target=set_more_values)
++        t.start()
++
++        # Hope that due to the large amount of labels involved, we will smack
++        # head-first into the race of iterating over the dict whilst adding more
++        # unique labels to it.
++        list(c.get_all())
++
+ 
+ class TestCounterMetric(unittest.TestCase):
+     def setUp(self):
+-- 
+2.44.0
+
