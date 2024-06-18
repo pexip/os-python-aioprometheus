@@ -1,6 +1,8 @@
 python-aioprometheus (22.5.0-0+pexip24u8) pexip; urgency=medium
 
   * d/p/revert-to-normal-json: fix patch
+  * partial apply of PR-87 (remove asynctest)
+  * enable tests
 
  -- Huw Jones <huw@pexip.com>  Tue, 18 Jun 2024 15:59:17 +0100
 

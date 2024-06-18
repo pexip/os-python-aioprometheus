@@ -1,0 +1,1252 @@
+From 4786678b413d166c0b6e0041558d11bc1a7097b2 Mon Sep 17 00:00:00 2001
+From: claws <clawsicus@gmail.com>
+Date: Tue, 14 Mar 2023 16:25:27 +1030
+Subject: [PATCH] Updates supporting release 23.3.0 (#87)
+
+---
+ tests/test_aiohttp.py                         |  69 +-
+ tests/test_decorators.py                      |   9 +-
+ tests/test_dist.bash                          |   4 +-
+ tests/test_export.py                          | 315 +--------
+ tests/test_fastapi.py                         |  86 +--
+ tests/test_formats_text.py                    |   9 -
+ tests/test_histogram.py                       |   3 -
+ tests/test_negotiate.py                       |  21 -
+ tests/test_pusher.py                          |  94 +--
+ tests/test_quart.py                           |  73 +-
+ tests/test_renderer.py                        |  21 +-
+
+diff --git a/tests/test_aiohttp.py b/tests/test_aiohttp.py
+index e9f74ea..46a0fe5 100644
+--- a/tests/test_aiohttp.py
++++ b/tests/test_aiohttp.py
+@@ -1,4 +1,4 @@
+-import asynctest
++import unittest
+ 
+ from aioprometheus import REGISTRY, Counter, formats, render
+ 
+@@ -11,16 +11,9 @@
+ except ImportError:
+     have_aiohttp = False
+ 
+-try:
+-    import prometheus_metrics_proto as pmp
+-
+-    have_pmp = True
+-except ImportError:
+-    have_pmp = False
+-
+ 
+-@asynctest.skipUnless(have_aiohttp, "aiohttp library is not available")
+-class TestAiohttpRender(asynctest.TestCase):
++@unittest.skipUnless(have_aiohttp, "aiohttp library is not available")
++class TestAiohttpRender(unittest.IsolatedAsyncioTestCase):
+     """
+     Test exposing Prometheus metrics from within a aiohttp existing web
+     service without starting a separate Prometheus metrics server.
+@@ -65,7 +58,6 @@ async def handle_metrics(request):
+         metrics_url = f"{url}/metrics"
+ 
+         async with aiohttp.ClientSession() as session:
+-
+             # Access root to increment metric counter
+             async with session.get(root_url) as response:
+                 self.assertEqual(response.status, 200)
+@@ -91,59 +83,4 @@ async def handle_metrics(request):
+                     response.headers.get("content-type"),
+                 )
+ 
+         await runner.cleanup()
+-
+-    @asynctest.skipUnless(have_pmp, "prometheus_metrics_proto library is not available")
+-    async def test_binary_render_in_aiohttp_app(self):
+-        """check binary render usage in aiohttp app"""
+-
+-        app = aiohttp.web.Application()
+-        app.registry = REGISTRY
+-        app.events_counter = Counter("events", "Number of events.")
+-
+-        async def index(request):
+-            app.events_counter.inc({"path": "/"})
+-            return aiohttp.web.Response(text="hello")
+-
+-        async def handle_metrics(request):
+-            content, http_headers = render(
+-                app.registry, request.headers.getall(aiohttp.hdrs.ACCEPT, [])
+-            )
+-            return aiohttp.web.Response(body=content, headers=http_headers)
+-
+-        app.add_routes(
+-            [aiohttp.web.get("/", index), aiohttp.web.get("/metrics", handle_metrics)]
+-        )
+-
+-        runner = aiohttp.web.AppRunner(app)
+-        await runner.setup()
+-
+-        site = aiohttp.web.TCPSite(runner, "127.0.0.1", 0, shutdown_timeout=1.0)
+-        await site.start()
+-
+-        # Fetch ephemeral port that was bound.
+-        # IPv4 address returns a 2-tuple, IPv6 returns a 4-tuple
+-        host, port, *_ = runner.addresses[0]
+-        host = host if ":" not in host else f"[{host}]"
+-        url = f"http://{host}:{port}"
+-        root_url = f"{url}/"
+-        metrics_url = f"{url}/metrics"
+-
+-        async with aiohttp.ClientSession() as session:
+-
+-            # Access root to increment metric counter
+-            async with session.get(root_url) as response:
+-                self.assertEqual(response.status, 200)
+-
+-            # Get binary format
+-            async with session.get(
+-                metrics_url,
+-                headers={aiohttp.hdrs.ACCEPT: formats.binary.BINARY_CONTENT_TYPE},
+-            ) as response:
+-                self.assertEqual(response.status, 200)
+-                self.assertIn(
+-                    formats.binary.BINARY_CONTENT_TYPE,
+-                    response.headers.get("content-type"),
+-                )
+-
+-        await runner.cleanup()
+diff --git a/tests/test_decorators.py b/tests/test_decorators.py
+index c24b9f1..57714cf 100644
+--- a/tests/test_decorators.py
++++ b/tests/test_decorators.py
+@@ -1,6 +1,5 @@
+ import asyncio
+-
+-import asynctest
++import unittest
+ 
+ from aioprometheus import (
+     REGISTRY,
+@@ -14,7 +13,7 @@
+ )
+ 
+ 
+-class TestDecorators(asynctest.TestCase):
++class TestDecorators(unittest.IsolatedAsyncioTestCase):
+     def tearDown(self):
+         REGISTRY.clear()
+ 
+@@ -51,7 +50,6 @@ async def b(self, should_raise: bool, arg_1, kwarg_1=None):
+         )
+         for test_msg, raises, count in SUB_TESTS:
+             with self.subTest(test_msg, raises=raises):
+-
+                 if raises:
+                     # check decorator with async function
+                     with self.assertRaises(Exception) as cm:
+@@ -135,7 +133,6 @@ async def b(self, should_raise: bool, arg_1, kwarg_1=None):
+         )
+         for test_msg, raises in SUB_TESTS:
+             with self.subTest(test_msg, raises=raises):
+-
+                 if raises:
+                     # check decorator with async function
+                     with self.assertRaises(Exception) as cm:
+@@ -150,7 +147,6 @@ async def b(self, should_raise: bool, arg_1, kwarg_1=None):
+                         await b.b(raises, "b_arg", kwarg_1="kwarg_1")
+ 
+                 else:
+-
+                     # check decorator with async function.
+                     # Set a non-zero wait duration so we can check that the
+                     # metric actually increases while it is in-progress
+@@ -228,7 +224,6 @@ async def b(self, should_raise: bool, arg_1, kwarg_1=None):
+         )
+         for test_msg, raises in SUB_TESTS:
+             with self.subTest(test_msg, raises=raises):
+-
+                 if raises:
+                     # check decorator with async function
+                     with self.assertRaises(Exception) as cm:
+diff --git a/tests/test_dist.bash b/tests/test_dist.bash
+index 5effe57..8dac0f3 100755
+--- a/tests/test_dist.bash
++++ b/tests/test_dist.bash
+@@ -22,10 +22,10 @@ echo "Upgrading pip"
+ pip install pip --upgrade
+ 
+ echo "Install test dependencies and extras to check integrations"
+-pip install asynctest requests aiohttp fastapi quart
++pip install asynctest requests aiohttp fastapi quart httpx
+ 
+ echo "Installing $RELEASE_ARCHIVE"
+-pip install $RELEASE_ARCHIVE[aiohttp,binary,starlette,quart]
++pip install $RELEASE_ARCHIVE[aiohttp,starlette,quart]
+ 
+ echo "Running tests"
+ cd ..
+diff --git a/tests/test_export.py b/tests/test_export.py
+index 681223b..5b9ed43 100644
+--- a/tests/test_export.py
++++ b/tests/test_export.py
+@@ -1,5 +1,5 @@
+-import asynctest
+-import asynctest.mock
++import unittest
++import unittest.mock
+ 
+ import aioprometheus
+ from aioprometheus import REGISTRY, Counter, Gauge, Histogram, Registry, Summary
+@@ -16,19 +16,9 @@
+     have_aiohttp = False
+ 
+ 
+-try:
+-    import prometheus_metrics_proto as pmp
+-
+-    from aioprometheus.formats import binary
+-
+-    have_pmp = True
+-except ImportError:
+-    have_pmp = False
+-
+-
+-@asynctest.skipUnless(have_aiohttp, "aiohttp library is not available")
+-class TestTextExporter(asynctest.TestCase):
+-    async def tearDown(self):
++@unittest.skipUnless(have_aiohttp, "aiohttp library is not available")
++class TestTextExporter(unittest.IsolatedAsyncioTestCase):
++    def tearDown(self):
+         REGISTRY.clear()
+ 
+     async def test_valid_registry(self):
+@@ -65,7 +55,7 @@ async def test_start_started_server(self):
+         s = Service()
+         await s.start(addr="127.0.0.1")
+ 
+-        with asynctest.mock.patch.object(
++        with unittest.mock.patch.object(
+             aioprometheus.service.logger, "warning"
+         ) as mock_warn:
+             await s.start(addr="127.0.0.1")
+@@ -83,7 +73,7 @@ async def test_stop_stopped_server(self):
+         await s.start(addr="127.0.0.1")
+         await s.stop()
+ 
+-        with asynctest.mock.patch.object(
++        with unittest.mock.patch.object(
+             aioprometheus.service.logger, "warning"
+         ) as mock_warn:
+             await s.stop()
+@@ -128,43 +118,6 @@ async def test_counter_text(self):
+ 
+         await s.stop()
+ 
+-    @asynctest.skipUnless(have_pmp, "prometheus_metrics_proto library is not available")
+-    async def test_counter_binary(self):
+-        """check counter metric binary export"""
+-
+-        s = Service()
+-        await s.start(addr="127.0.0.1")
+-
+-        # Add some metrics
+-        data = (
+-            ({"data": 1}, 100),
+-            ({"data": "2"}, 200),
+-            ({"data": 3}, 300),
+-            ({"data": 1}, 400),
+-        )
+-        c = Counter("test_counter", "Test Counter.", {"test": "test_counter"})
+-
+-        for i in data:
+-            c.set(i[0], i[1])
+-
+-        async with aiohttp.ClientSession() as session:
+-            async with session.get(
+-                s.metrics_url, headers={ACCEPT: binary.BINARY_CONTENT_TYPE}
+-            ) as resp:
+-                self.assertEqual(resp.status, 200)
+-                content = await resp.read()
+-                self.assertEqual(
+-                    binary.BINARY_CONTENT_TYPE, resp.headers.get(CONTENT_TYPE)
+-                )
+-                metrics = pmp.decode(content)
+-                self.assertEqual(len(metrics), 1)
+-                mf = metrics[0]
+-                self.assertIsInstance(mf, pmp.MetricFamily)
+-                self.assertEqual(mf.type, pmp.COUNTER)
+-                self.assertEqual(len(mf.metric), 3)
+-
+-        await s.stop()
+-
+     async def test_gauge_text(self):
+         """check gauge metric text export"""
+ 
+@@ -201,43 +154,6 @@ async def test_gauge_text(self):
+ 
+         await s.stop()
+ 
+-    @asynctest.skipUnless(have_pmp, "prometheus_metrics_proto library is not available")
+-    async def test_gauge_binary(self):
+-        """check gauge metric binary export"""
+-
+-        s = Service()
+-        await s.start(addr="127.0.0.1")
+-
+-        # Add some metrics
+-        data = (
+-            ({"data": 1}, 100),
+-            ({"data": "2"}, 200),
+-            ({"data": 3}, 300),
+-            ({"data": 1}, 400),
+-        )
+-        g = Gauge("test_gauge", "Test Gauge.", {"test": "test_gauge"})
+-
+-        for i in data:
+-            g.set(i[0], i[1])
+-
+-        async with aiohttp.ClientSession() as session:
+-            async with session.get(
+-                s.metrics_url, headers={ACCEPT: binary.BINARY_CONTENT_TYPE}
+-            ) as resp:
+-                self.assertEqual(resp.status, 200)
+-                content = await resp.read()
+-                self.assertEqual(
+-                    binary.BINARY_CONTENT_TYPE, resp.headers.get(CONTENT_TYPE)
+-                )
+-                metrics = pmp.decode(content)
+-                self.assertEqual(len(metrics), 1)
+-                mf = metrics[0]
+-                self.assertIsInstance(mf, pmp.MetricFamily)
+-                self.assertEqual(mf.type, pmp.GAUGE)
+-                self.assertEqual(len(mf.metric), 3)
+-
+-        await s.stop()
+-
+     async def test_summary_text(self):
+         """check summary metric text export"""
+ 
+@@ -263,7 +179,6 @@ async def test_summary_text(self):
+ """
+ 
+         async with aiohttp.ClientSession() as session:
+-
+             # Fetch as text
+             async with session.get(
+                 s.metrics_url, headers={ACCEPT: text.TEXT_CONTENT_TYPE}
+@@ -273,59 +188,6 @@ async def test_summary_text(self):
+                 self.assertEqual(text.TEXT_CONTENT_TYPE, resp.headers.get(CONTENT_TYPE))
+                 self.assertEqual(expected_data, content.decode())
+ 
+-            if have_pmp:
+-                # Fetch as binary
+-                async with session.get(
+-                    s.metrics_url, headers={ACCEPT: binary.BINARY_CONTENT_TYPE}
+-                ) as resp:
+-                    self.assertEqual(resp.status, 200)
+-                    content = await resp.read()
+-                    self.assertEqual(
+-                        binary.BINARY_CONTENT_TYPE, resp.headers.get(CONTENT_TYPE)
+-                    )
+-                    metrics = pmp.decode(content)
+-                    self.assertEqual(len(metrics), 1)
+-                    mf = metrics[0]
+-                    self.assertIsInstance(mf, pmp.MetricFamily)
+-                    self.assertEqual(mf.type, pmp.SUMMARY)
+-                    self.assertEqual(len(mf.metric), 1)
+-                    self.assertEqual(len(mf.metric[0].summary.quantile), 3)
+-
+-        await s.stop()
+-
+-    @asynctest.skipUnless(have_pmp, "prometheus_metrics_proto library is not available")
+-    async def test_summary_binary(self):
+-        """check summary metric binary export"""
+-
+-        s = Service()
+-        await s.start(addr="127.0.0.1")
+-
+-        # Add some metrics
+-        data = [3, 5.2, 13, 4]
+-        label = {"data": 1}
+-
+-        summary = Summary("test_summary", "Test Summary.", {"test": "test_summary"})
+-
+-        for i in data:
+-            summary.add(label, i)
+-
+-        async with aiohttp.ClientSession() as session:
+-            async with session.get(
+-                s.metrics_url, headers={ACCEPT: binary.BINARY_CONTENT_TYPE}
+-            ) as resp:
+-                self.assertEqual(resp.status, 200)
+-                content = await resp.read()
+-                self.assertEqual(
+-                    binary.BINARY_CONTENT_TYPE, resp.headers.get(CONTENT_TYPE)
+-                )
+-                metrics = pmp.decode(content)
+-                self.assertEqual(len(metrics), 1)
+-                mf = metrics[0]
+-                self.assertIsInstance(mf, pmp.MetricFamily)
+-                self.assertEqual(mf.type, pmp.SUMMARY)
+-                self.assertEqual(len(mf.metric), 1)
+-                self.assertEqual(len(mf.metric[0].summary.quantile), 3)
+-
+         await s.stop()
+ 
+     async def test_histogram_text(self):
+@@ -359,7 +221,6 @@ async def test_histogram_text(self):
+ """
+ 
+         async with aiohttp.ClientSession() as session:
+-
+             # Fetch as text
+             async with session.get(
+                 s.metrics_url, headers={ACCEPT: text.TEXT_CONTENT_TYPE}
+@@ -369,64 +230,6 @@ async def test_histogram_text(self):
+                 self.assertEqual(text.TEXT_CONTENT_TYPE, resp.headers.get(CONTENT_TYPE))
+                 self.assertEqual(expected_data, content.decode())
+ 
+-            if have_pmp:
+-                # Fetch as binary
+-                async with session.get(
+-                    s.metrics_url, headers={ACCEPT: binary.BINARY_CONTENT_TYPE}
+-                ) as resp:
+-                    self.assertEqual(resp.status, 200)
+-                    content = await resp.read()
+-                    self.assertEqual(
+-                        binary.BINARY_CONTENT_TYPE, resp.headers.get(CONTENT_TYPE)
+-                    )
+-                    metrics = pmp.decode(content)
+-                    self.assertEqual(len(metrics), 1)
+-                    mf = metrics[0]
+-                    self.assertIsInstance(mf, pmp.MetricFamily)
+-                    self.assertEqual(mf.type, pmp.HISTOGRAM)
+-                    self.assertEqual(len(mf.metric), 1)
+-                    self.assertEqual(len(mf.metric[0].histogram.bucket), 4)
+-
+-        await s.stop()
+-
+-    @asynctest.skipUnless(have_pmp, "prometheus_metrics_proto library is not available")
+-    async def test_histogram_binary(self):
+-        """check histogram metric binary export"""
+-
+-        s = Service()
+-        await s.start(addr="127.0.0.1")
+-
+-        # Add some metrics
+-        data = [3, 5.2, 13, 4]
+-        label = {"data": 1}
+-
+-        h = Histogram(
+-            "histogram_test",
+-            "Test Histogram.",
+-            {"type": "test_histogram"},
+-            buckets=[5.0, 10.0, 15.0],
+-        )
+-
+-        for i in data:
+-            h.add(label, i)
+-
+-        async with aiohttp.ClientSession() as session:
+-            async with session.get(
+-                s.metrics_url, headers={ACCEPT: binary.BINARY_CONTENT_TYPE}
+-            ) as resp:
+-                self.assertEqual(resp.status, 200)
+-                content = await resp.read()
+-                self.assertEqual(
+-                    binary.BINARY_CONTENT_TYPE, resp.headers.get(CONTENT_TYPE)
+-                )
+-                metrics = pmp.decode(content)
+-                self.assertEqual(len(metrics), 1)
+-                mf = metrics[0]
+-                self.assertIsInstance(mf, pmp.MetricFamily)
+-                self.assertEqual(mf.type, pmp.HISTOGRAM)
+-                self.assertEqual(len(mf.metric), 1)
+-                self.assertEqual(len(mf.metric[0].histogram.bucket), 4)
+-
+         await s.stop()
+ 
+     async def test_all_text(self):
+@@ -542,7 +345,6 @@ async def test_all_text(self):
+ """
+ 
+         async with aiohttp.ClientSession() as session:
+-
+             # Fetch as text
+             async with session.get(
+                 s.metrics_url, headers={ACCEPT: text.TEXT_CONTENT_TYPE}
+@@ -552,108 +354,6 @@ async def test_all_text(self):
+                 self.assertEqual(text.TEXT_CONTENT_TYPE, resp.headers.get(CONTENT_TYPE))
+                 self.assertEqual(expected_data, content.decode())
+ 
+-            if have_pmp:
+-                # Fetch as binary
+-                async with session.get(
+-                    s.metrics_url, headers={ACCEPT: binary.BINARY_CONTENT_TYPE}
+-                ) as resp:
+-                    self.assertEqual(resp.status, 200)
+-                    content = await resp.read()
+-                    self.assertEqual(
+-                        binary.BINARY_CONTENT_TYPE, resp.headers.get(CONTENT_TYPE)
+-                    )
+-                    metrics = pmp.decode(content)
+-                    self.assertEqual(len(metrics), 4)
+-                    for mf in metrics:
+-                        self.assertIsInstance(mf, pmp.MetricFamily)
+-                        if mf.type == pmp.COUNTER:
+-                            self.assertEqual(len(mf.metric), 4)
+-                        elif mf.type == pmp.GAUGE:
+-                            self.assertEqual(len(mf.metric), 4)
+-                        elif mf.type == pmp.SUMMARY:
+-                            self.assertEqual(len(mf.metric), 4)
+-                            self.assertEqual(len(mf.metric[0].summary.quantile), 3)
+-                        elif mf.type == pmp.HISTOGRAM:
+-                            self.assertEqual(len(mf.metric), 4)
+-                            self.assertEqual(len(mf.metric[0].histogram.bucket), 4)
+-
+-        await s.stop()
+-
+-    @asynctest.skipUnless(have_pmp, "prometheus_metrics_proto library is not available")
+-    async def test_all_binary(self):
+-        """check multiple metrics binary export"""
+-
+-        s = Service()
+-        await s.start(addr="127.0.0.1")
+-
+-        counter_data = (
+-            ({"c_sample": "1"}, 100),
+-            ({"c_sample": "2"}, 200),
+-            ({"c_sample": "3"}, 300),
+-            ({"c_sample": "1", "c_subsample": "b"}, 400),
+-        )
+-
+-        gauge_data = (
+-            ({"g_sample": "1"}, 500),
+-            ({"g_sample": "2"}, 600),
+-            ({"g_sample": "3"}, 700),
+-            ({"g_sample": "1", "g_subsample": "b"}, 800),
+-        )
+-
+-        summary_data = (
+-            ({"s_sample": "1"}, range(1000, 2000, 4)),
+-            ({"s_sample": "2"}, range(2000, 3000, 20)),
+-            ({"s_sample": "3"}, range(3000, 4000, 13)),
+-            ({"s_sample": "1", "s_subsample": "b"}, range(4000, 5000, 47)),
+-        )
+-
+-        histogram_data = (
+-            ({"h_sample": "1"}, [3, 14]),
+-            ({"h_sample": "2"}, range(1, 20, 2)),
+-            ({"h_sample": "3"}, range(1, 20, 2)),
+-            ({"h_sample": "1", "h_subsample": "b"}, range(1, 20, 2)),
+-        )
+-
+-        counter = Counter("counter_test", "A counter.", {"type": "counter"})
+-        gauge = Gauge("gauge_test", "A gauge.", {"type": "gauge"})
+-        summary = Summary("summary_test", "A summary.", {"type": "summary"})
+-        histogram = Histogram(
+-            "histogram_test",
+-            "A histogram.",
+-            {"type": "histogram"},
+-            buckets=[5.0, 10.0, 15.0],
+-        )
+-
+-        # Add data
+-        [counter.set(c[0], c[1]) for c in counter_data]
+-        [gauge.set(g[0], g[1]) for g in gauge_data]
+-        [summary.add(i[0], s) for i in summary_data for s in i[1]]
+-        [histogram.observe(i[0], h) for i in histogram_data for h in i[1]]
+-
+-        async with aiohttp.ClientSession() as session:
+-            async with session.get(
+-                s.metrics_url, headers={ACCEPT: binary.BINARY_CONTENT_TYPE}
+-            ) as resp:
+-                self.assertEqual(resp.status, 200)
+-                content = await resp.read()
+-                self.assertEqual(
+-                    binary.BINARY_CONTENT_TYPE, resp.headers.get(CONTENT_TYPE)
+-                )
+-                metrics = pmp.decode(content)
+-                self.assertEqual(len(metrics), 4)
+-                for mf in metrics:
+-                    self.assertIsInstance(mf, pmp.MetricFamily)
+-                    if mf.type == pmp.COUNTER:
+-                        self.assertEqual(len(mf.metric), 4)
+-                    elif mf.type == pmp.GAUGE:
+-                        self.assertEqual(len(mf.metric), 4)
+-                    elif mf.type == pmp.SUMMARY:
+-                        self.assertEqual(len(mf.metric), 4)
+-                        self.assertEqual(len(mf.metric[0].summary.quantile), 3)
+-                    elif mf.type == pmp.HISTOGRAM:
+-                        self.assertEqual(len(mf.metric), 4)
+-                        self.assertEqual(len(mf.metric[0].histogram.bucket), 4)
+-
+         await s.stop()
+ 
+     async def test_no_accept_header(self):
+@@ -675,7 +375,6 @@ async def test_no_accept_header(self):
+ """
+ 
+         async with aiohttp.ClientSession() as session:
+-
+             # Fetch without explicit accept type
+             async with session.get(s.metrics_url) as resp:
+                 self.assertEqual(resp.status, 200)
+diff --git a/tests/test_fastapi.py b/tests/test_fastapi.py
+index 9f337c4..8067b26 100644
+--- a/tests/test_fastapi.py
++++ b/tests/test_fastapi.py
+@@ -13,13 +13,6 @@
+ except ImportError:
+     have_fastapi = False
+ 
+-try:
+-    import prometheus_metrics_proto as pmp
+-
+-    have_pmp = True
+-except ImportError:
+-    have_pmp = False
+-
+ 
+ @unittest.skipUnless(have_fastapi, "FastAPI library is not available")
+ class TestFastAPIUsage(unittest.TestCase):
+@@ -70,51 +63,6 @@ async def handle_metrics(response: Response, accept: List[str] = Header(None)):
+         # Check content
+         self.assertIn('events{path="/"} 1', response.text)
+ 
+-    @unittest.skipUnless(have_pmp, "prometheus_metrics_proto library is not available")
+-    def test_render_binary(self):
+-        """check render binary usage in FastAPI app"""
+-
+-        app = FastAPI()
+-        app.events_counter = Counter("events", "Number of events.")
+-
+-        @app.get("/")
+-        async def hello():
+-            app.events_counter.inc({"path": "/"})
+-            return "hello"
+-
+-        @app.get("/metrics")
+-        async def handle_metrics(response: Response, accept: List[str] = Header(None)):
+-            content, http_headers = render(REGISTRY, accept)
+-            return Response(content=content, media_type=http_headers["Content-Type"])
+-
+-        # The test client also starts the web service
+-        test_client = TestClient(app)
+-
+-        # Access root to increment metric counter
+-        response = test_client.get("/")
+-        self.assertEqual(response.status_code, 200)
+-
+-        # Get binary format
+-        response = test_client.get(
+-            "/metrics",
+-            headers={"accept": formats.binary.BINARY_CONTENT_TYPE},
+-        )
+-        self.assertEqual(response.status_code, 200)
+-        self.assertIn(
+-            formats.binary.BINARY_CONTENT_TYPE,
+-            response.headers.get("content-type"),
+-        )
+-
+-        metrics = pmp.decode(response.content)
+-        self.assertEqual(len(metrics), 1)
+-        mf = metrics[0]
+-        self.assertIsInstance(mf, pmp.MetricFamily)
+-        self.assertEqual(mf.type, pmp.COUNTER)
+-        self.assertEqual(len(mf.metric), 1)
+-        self.assertEqual(mf.metric[0].counter.value, 1)
+-        self.assertEqual(mf.metric[0].label[0].name, "path")
+-        self.assertEqual(mf.metric[0].label[0].value, "/")
+-
+     def test_asgi_middleware(self):
+         """check ASGI middleware usage in FastAPI app"""
+ 
+@@ -144,16 +92,6 @@ async def hello():
+         # The test client also starts the web service
+         test_client = TestClient(app)
+ 
+-        # The test client does not call the ASGI lifespan scope on the app
+-        # so we need to manual set the starlette_app attribute on the middleware.
+-        # The only way I can think of doing this is to walk over the middlewares.
+-        # However the structure is difficult to walk over.
+-        # 'sem' represents the ServerErrorMiddleware that Starlette always adds
+-        # as the first Middlware, before any user middleware.
+-        sem = app.middleware_stack
+-        self.assertIsInstance(sem.app, MetricsMiddleware)
+-        sem.app.starlette_app = app
+-
+         # Access root to update default metrics and trigger custom metric update
+         response = test_client.get("/")
+         self.assertEqual(response.status_code, 200)
+@@ -364,14 +302,16 @@ async def hello():
+ 
+         # Check content
+         self.assertIn(
+-            'requests_total_counter{method="GET",path="/users/bob"} 1', response.text
++            'requests_total_counter{method="GET",path="/users/{user_id}"} 1',
++            response.text,
+         )
+         self.assertIn(
+-            'status_codes_counter{method="GET",path="/users/bob",status_code="2xx"} 1',
++            'status_codes_counter{method="GET",path="/users/{user_id}",status_code="2xx"} 1',
+             response.text,
+         )
+         self.assertIn(
+-            'responses_total_counter{method="GET",path="/users/bob"} 1', response.text
++            'responses_total_counter{method="GET",path="/users/{user_id}"} 1',
++            response.text,
+         )
+ 
+         # Access it again to confirm default metrics get incremented
+@@ -388,24 +328,16 @@ async def hello():
+ 
+         # Check content
+         self.assertIn(
+-            'requests_total_counter{method="GET",path="/users/bob"} 1', response.text
+-        )
+-        self.assertIn(
+-            'requests_total_counter{method="GET",path="/users/alice"} 1', response.text
+-        )
+-        self.assertIn(
+-            'status_codes_counter{method="GET",path="/users/bob",status_code="2xx"} 1',
++            'requests_total_counter{method="GET",path="/users/{user_id}"} 2',
+             response.text,
+         )
+         self.assertIn(
+-            'status_codes_counter{method="GET",path="/users/alice",status_code="2xx"} 1',
++            'status_codes_counter{method="GET",path="/users/{user_id}",status_code="2xx"} 2',
+             response.text,
+         )
+         self.assertIn(
+-            'responses_total_counter{method="GET",path="/users/bob"} 1', response.text
+-        )
+-        self.assertIn(
+-            'responses_total_counter{method="GET",path="/users/alice"} 1', response.text
++            'responses_total_counter{method="GET",path="/users/{user_id}"} 2',
++            response.text,
+         )
+ 
+         # Access boom route to trigger exception metric update
+diff --git a/tests/test_formats_text.py b/tests/test_formats_text.py
+index f5f62a1..5629a98 100644
+--- a/tests/test_formats_text.py
++++ b/tests/test_formats_text.py
+@@ -32,7 +32,6 @@ def test_wrong_format(self):
+         self.assertEqual("Not a valid object format", str(context.exception))
+ 
+     def test_counter_format(self):
+-
+         self.data = {
+             "name": "logged_users_total",
+             "doc": "Logged users in the application",
+@@ -86,7 +85,6 @@ def test_counter_format(self):
+         self.assertEqual(valid_result, result)
+ 
+     def test_counter_format_with_const_labels(self):
+-
+         self.data = {
+             "name": "logged_users_total",
+             "doc": "Logged users in the application",
+@@ -140,7 +138,6 @@ def test_counter_format_with_const_labels(self):
+         self.assertEqual(valid_result, result)
+ 
+     def test_counter_format_text(self):
+-
+         name = "container_cpu_usage_seconds_total"
+         doc = "Total seconds of cpu time consumed."
+ 
+@@ -257,7 +254,6 @@ def test_counter_format_with_timestamp(self):
+         self.assertTrue(re.match(result_regex, result))
+ 
+     def test_single_counter_format_text(self):
+-
+         name = "prometheus_dns_sd_lookups_total"
+         doc = "The number of DNS-SD lookups."
+ 
+@@ -281,7 +277,6 @@ def test_single_counter_format_text(self):
+         self.assertEqual(valid_result, result)
+ 
+     def test_gauge_format(self):
+-
+         self.data = {
+             "name": "logged_users_total",
+             "doc": "Logged users in the application",
+@@ -335,7 +330,6 @@ def test_gauge_format(self):
+         self.assertEqual(valid_result, result)
+ 
+     def test_gauge_format_with_const_labels(self):
+-
+         self.data = {
+             "name": "logged_users_total",
+             "doc": "Logged users in the application",
+@@ -389,7 +383,6 @@ def test_gauge_format_with_const_labels(self):
+         self.assertEqual(valid_result, result)
+ 
+     def test_gauge_format_text(self):
+-
+         name = "container_memory_max_usage_bytes"
+         doc = "Maximum memory usage ever recorded in bytes."
+ 
+@@ -482,7 +475,6 @@ def test_gauge_format_with_timestamp(self):
+         self.assertTrue(re.match(result_regex, result))
+ 
+     def test_single_gauge_format_text(self):
+-
+         name = "prometheus_local_storage_indexing_queue_capacity"
+         doc = "The capacity of the indexing queue."
+ 
+@@ -672,7 +664,6 @@ def test_summary_format_timestamp(self):
+         self.assertTrue(re.match(result_regex, result))
+ 
+     def test_registry_marshall(self):
+-
+         format_times = 3
+ 
+         counter_data = (
+diff --git a/tests/test_histogram.py b/tests/test_histogram.py
+index 0e1f7e9..7cfaee7 100644
+--- a/tests/test_histogram.py
++++ b/tests/test_histogram.py
+@@ -12,7 +12,6 @@ class TestHistogram(unittest.TestCase):
+     """Test histogram module"""
+ 
+     def test_histogram(self):
+-
+         with self.assertRaises(Exception) as context:
+             h = Histogram()
+         self.assertEqual("Must have at least two buckets", str(context.exception))
+@@ -40,7 +39,6 @@ def test_histogram(self):
+             self.assertEqual(tuple(h.buckets.values()), expected_values)
+ 
+     def test_linear_bucket_helper_functions(self):
+-
+         buckets = linearBuckets(1, 2, 5)
+         self.assertEqual(buckets, [1, 3, 5, 7, 9])
+ 
+@@ -53,7 +51,6 @@ def test_linear_bucket_helper_functions(self):
+         )
+ 
+     def test_exponential_bucket_helper_functions(self):
+-
+         buckets = exponentialBuckets(1, 10, 5)
+         self.assertEqual(buckets, [1, 10, 100, 1000, 10000])
+         h = Histogram(*buckets)
+diff --git a/tests/test_negotiate.py b/tests/test_negotiate.py
+index 1f6cb89..3a9892c 100644
+--- a/tests/test_negotiate.py
++++ b/tests/test_negotiate.py
+@@ -3,15 +3,6 @@
+ from aioprometheus.formats import text
+ from aioprometheus.negotiator import negotiate
+ 
+-try:
+-    import prometheus_metrics_proto as pmp
+-
+-    from aioprometheus.formats import binary
+-
+-    have_pmp = True
+-except ImportError:
+-    have_pmp = False
+-
+ 
+ class TestNegotiate(unittest.TestCase):
+     def test_text_default(self):
+@@ -43,15 +34,3 @@ def test_no_accept_header(self):
+         """check request with no accept header works"""
+         self.assertEqual(text.TextFormatter, negotiate(set()))
+         self.assertEqual(text.TextFormatter, negotiate(set([""])))
+-
+-    @unittest.skipUnless(have_pmp, "prometheus_metrics_proto library is not available")
+-    def test_protobuffer(self):
+-        """check that a protobuf formatter is returned"""
+-        headers = (
+-            "proto=io.prometheus.client.MetricFamily;application/vnd.google.protobuf;encoding=delimited",
+-            "application/vnd.google.protobuf;proto=io.prometheus.client.MetricFamily;encoding=delimited",
+-            "encoding=delimited;application/vnd.google.protobuf;proto=io.prometheus.client.MetricFamily",
+-        )
+-
+-        for accept in headers:
+-            self.assertEqual(binary.BinaryFormatter, negotiate(set(accept.split(";"))))
+diff --git a/tests/test_pusher.py b/tests/test_pusher.py
+index 458dbcb..7cb75c8 100644
+--- a/tests/test_pusher.py
++++ b/tests/test_pusher.py
+@@ -1,7 +1,6 @@
+ import asyncio
+ import sys
+-
+-import asynctest
++import unittest
+ 
+ from aioprometheus import REGISTRY, Counter, Registry
+ 
+@@ -14,7 +13,11 @@
+     have_aiohttp = True
+ except ImportError:
+     have_aiohttp = False
+-
++try:
++    from aiohttp_basicauth import BasicAuthMiddleware
++    have_basicauth = True
++except ImportError:
++    have_basicauth = False
+ 
+ if have_aiohttp:
+ 
+@@ -51,22 +54,24 @@
+             resp = aiohttp.web.Response(status=200)
+             return resp
+ 
+-        async def start(self, addr="127.0.0.1", port=None):
++        async def start(self, addr="127.0.0.1", port=None, middleware=None):
+             self._app = aiohttp.web.Application()
+             self._app.router.add_route(
+                 "*", "/metrics/job/{job}{tail:(/.+)?}", self.handler
+             )
+             self._app.router.add_route("*", "/api/v1/import/prometheus", self.handler)
+             self._app.router.add_route("*", "/slow", self.slow_handler)
++            if middleware:
++                self._app.middlewares.append(middleware)
+             self._runner = aiohttp.web.AppRunner(self._app)
+             await self._runner.setup()
+             self._site = aiohttp.web.TCPSite(self._runner, addr, port)
+             await self._site.start()
+             # IPV4 returns a 2-Tuple, IPV6 returns a 4-Tuple
+             _details = self._site._server.sockets[0].getsockname()
+-            _host, _port = _details[0:2]
+-            self.port = _port
+-            self.url = f"http://{addr}:{_port}"
++            _host, port = _details[0:2]
++            self.port = port
++            self.url = f"http://{addr}:{port}"
+             # TODO: replace the above with url = self._site.name when aiohttp
+             # issue #3018 is resolved.
+ 
+@@ -77,13 +82,13 @@ async def stop(self):
+             self._runner = None
+ 
+ 
+-@asynctest.skipUnless(have_aiohttp, "aiohttp library is not available")
+-class TestPusher(asynctest.TestCase):
+-    async def setUp(self):
++@unittest.skipUnless(have_aiohttp, "aiohttp library is not available")
++class TestPusher(unittest.IsolatedAsyncioTestCase):
++    async def asyncSetUp(self):
+         self.server = TestPusherServer()
+         await self.server.start()
+ 
+-    async def tearDown(self):
++    async def asyncTearDown(self):
+         await self.server.stop()
+         REGISTRY.clear()
+ 
+@@ -92,13 +97,12 @@ async def test_push_job_ping_victoriametrics(self):
+ 
+         # Create a pusher with the path for VictoriaMetrics
+         p = Pusher(job_name, self.server.url, path="/api/v1/import/prometheus")
+-        registry = Registry()
+-        c = Counter("total_requests", "Total requests.", {}, registry=registry)
++        c = Counter("total_requests", "Total requests.", {})
+ 
+         c.inc({"url": "/p/user"})
+ 
+         # Push to the pushgateway
+-        resp = await p.replace(registry)
++        resp = await p.replace(REGISTRY)
+         self.assertEqual(resp.status, 200)
+ 
+         self.assertEqual("/api/v1/import/prometheus", self.server.test_results["path"])
+@@ -106,13 +110,12 @@ async def test_push_job_ping_victoriametrics(self):
+     async def test_push_job_ping(self):
+         job_name = "my-job"
+         p = Pusher(job_name, self.server.url)
+-        registry = Registry()
+-        c = Counter("total_requests", "Total requests.", {}, registry=registry)
++        c = Counter("total_requests", "Total requests.", {})
+ 
+         c.inc({"url": "/p/user"})
+ 
+         # Push to the pushgateway
+-        resp = await p.replace(registry)
++        resp = await p.replace(REGISTRY)
+         self.assertEqual(resp.status, 200)
+ 
+         self.assertEqual("/metrics/job/my-job", self.server.test_results["path"])
+@@ -126,13 +129,12 @@ async def test_grouping_key(self):
+             self.server.url,
+             grouping_key={"instance": "127.0.0.1:1234"},
+         )
+-        registry = Registry()
+-        c = Counter("total_requests", "Total requests.", {}, registry=registry)
++        c = Counter("total_requests", "Total requests.", {})
+ 
+         c.inc({})
+ 
+         # Push to the pushgateway
+-        resp = await p.replace(registry)
++        resp = await p.replace(REGISTRY)
+         self.assertEqual(resp.status, 200)
+ 
+         self.assertEqual(
+@@ -149,13 +151,12 @@ async def test_grouping_key_with_empty_value(self):
+             self.server.url,
+             grouping_key={"first": "", "second": "foo"},
+         )
+-        registry = Registry()
+-        c = Counter("example_total", "Total examples", {}, registry=registry)
++        c = Counter("example_total", "Total examples", {})
+ 
+         c.inc({})
+ 
+         # Push to the pushgateway
+-        resp = await p.replace(registry)
++        resp = await p.replace(REGISTRY)
+         self.assertEqual(resp.status, 200)
+ 
+         self.assertEqual(
+@@ -172,13 +173,12 @@ async def test_grouping_key_with_value_containing_slash(self):
+             self.server.url,
+             grouping_key={"path": "/var/tmp"},
+         )
+-        registry = Registry()
+-        c = Counter("exec_total", "Total executions", {}, registry=registry)
++        c = Counter("exec_total", "Total executions", {})
+ 
+         c.inc({})
+ 
+         # Push to the pushgateway
+-        resp = await p.replace(registry)
++        resp = await p.replace(REGISTRY)
+         self.assertEqual(resp.status, 200)
+ 
+         # Generated base64 content include '=' as padding.
+@@ -202,11 +202,6 @@ async def test_push_add(self):
+             b"# TYPE counter_test counter\n"
+             b'counter_test{c_sample="1",c_subsample="b",type="counter"} 400\n'
+         )
+-        # BinaryFormatter expected result
+-        # valid_result = (b'[\n\x0ccounter_test\x12\nA counter.\x18\x00"=\n\r'
+-        #                 b'\n\x08c_sample\x12\x011\n\x10\n\x0bc_subsample\x12'
+-        #                 b'\x01b\n\x0f\n\x04type\x12\x07counter\x1a\t\t\x00'
+-        #                 b'\x00\x00\x00\x00\x00y@')
+ 
+         # Push to the pushgateway
+         resp = await p.add(REGISTRY)
+@@ -231,11 +226,6 @@ async def test_push_replace(self):
+             b"# TYPE counter_test counter\n"
+             b'counter_test{c_sample="1",c_subsample="b",type="counter"} 400\n'
+         )
+-        # BinaryFormatter expected result
+-        # valid_result = (b'[\n\x0ccounter_test\x12\nA counter.\x18\x00"=\n\r'
+-        #                 b'\n\x08c_sample\x12\x011\n\x10\n\x0bc_subsample\x12'
+-        #                 b'\x01b\n\x0f\n\x04type\x12\x07counter\x1a\t\t\x00'
+-        #                 b'\x00\x00\x00\x00\x00y@')
+ 
+         # Push to the pushgateway
+         resp = await p.replace(REGISTRY)
+@@ -260,11 +250,6 @@ async def test_push_delete(self):
+             b"# TYPE counter_test counter\n"
+             b'counter_test{c_sample="1",c_subsample="b",type="counter"} 400\n'
+         )
+-        # BinaryFormatter expected result
+-        # valid_result = (b'[\n\x0ccounter_test\x12\nA counter.\x18\x00"=\n'
+-        #                 b'\r\n\x08c_sample\x12\x011\n\x10\n\x0bc_subsample'
+-        #                 b'\x12\x01b\n\x0f\n\x04type\x12\x07counter\x1a\t\t'
+-        #                 b'\x00\x00\x00\x00\x00\x00y@')
+ 
+         # Push to the pushgateway
+         resp = await p.delete(REGISTRY)
+@@ -274,7 +259,7 @@ async def test_push_delete(self):
+         self.assertEqual("DELETE", self.server.test_results["method"])
+         self.assertEqual(valid_result, self.server.test_results["body"])
+ 
+-    @asynctest.skipUnless(sys.version_info > (3, 8, 0), "requires 3.8+")
++    @unittest.skipUnless(sys.version_info > (3, 8, 0), "requires 3.8+")
+     async def test_push_timeout(self):
+         job_name = "my-job"
+         p = Pusher(job_name, self.server.url, path="/slow")
+@@ -300,3 +285,35 @@
+ 
+         with self.assertRaises(asyncio.exceptions.TimeoutError):
+             await p.replace(REGISTRY, timeout=timeout)
++
++
++@unittest.skipUnless(have_basicauth, "aiohttp_basicauth library is not available")
++@unittest.skipUnless(have_aiohttp, "aiohttp library is not available")
++class TestPusherBasicAuth(unittest.IsolatedAsyncioTestCase):
++    """A minimal duplicate of the test suite above that demonstrates auth used with Pusher"""
++
++    async def asyncSetUp(self):
++        self.username = "Joe"
++        self.password = "4321"
++        self.server = TestPusherServer()
++        bam = BasicAuthMiddleware(username=self.username, password=self.password)
++        await self.server.start(middleware=bam)
++
++    async def asyncTearDown(self):
++        await self.server.stop()
++        REGISTRY.clear()
++
++    async def test_push_job_ping_with_auth(self):
++        job_name = "my-job"
++        p = Pusher(job_name, self.server.url)
++        c = Counter("total_requests", "Total requests.", {})
++
++        c.inc({"url": "/p/user"})
++
++        self.auth = aiohttp.BasicAuth(self.username, password=self.password)
++
++        # Push to the pushgateway
++        resp = await p.replace(REGISTRY, auth=self.auth)
++        self.assertEqual(resp.status, 200)
++
++        self.assertEqual("/metrics/job/my-job", self.server.test_results["path"])
+diff --git a/tests/test_quart.py b/tests/test_quart.py
+index ee68a39..5c3c942 100644
+--- a/tests/test_quart.py
++++ b/tests/test_quart.py
+@@ -1,8 +1,6 @@
+-import logging
+ import sys
+ import unittest
+-
+-import asynctest
++import unittest.mock
+ 
+ from aioprometheus import REGISTRY, Counter, MetricsMiddleware, formats, render
+ 
+@@ -15,16 +13,9 @@
+ except ImportError:
+     have_quart = False
+ 
+-try:
+-    import prometheus_metrics_proto as pmp
+-
+-    have_pmp = True
+-except ImportError:
+-    have_pmp = False
+-
+ 
+ @unittest.skipUnless(have_quart, "Quart library is not available")
+-class TestQuartRender(asynctest.TestCase):
++class TestQuartRender(unittest.IsolatedAsyncioTestCase):
+     """Test exposing Prometheus metrics from within a Quart app"""
+ 
+     def tearDown(self):
+@@ -74,52 +65,6 @@ async def handle_metrics():
+         # Check content
+         self.assertIn(b'events{path="/"} 1', payload)
+ 
+-    @unittest.skipUnless(have_pmp, "prometheus_metrics_proto library is not available")
+-    async def test_render_binary(self):
+-        """check render binary usage in Quart app"""
+-
+-        app = Quart(__name__)
+-        app.events_counter = Counter("events", "Number of events.")
+-
+-        @app.route("/")
+-        async def index():
+-            app.events_counter.inc({"path": "/"})
+-            return "hello"
+-
+-        @app.route("/metrics")
+-        async def handle_metrics():
+-            content, http_headers = render(REGISTRY, request.headers.getlist("accept"))
+-            return content, http_headers
+-
+-        # The test client also starts the web service
+-        test_client = app.test_client()
+-
+-        # Access root to increment metric counter
+-        response = await test_client.get("/")
+-        self.assertEqual(response.status_code, 200)
+-
+-        # Get binary format
+-        response = await test_client.get(
+-            "/metrics",
+-            headers={"accept": formats.binary.BINARY_CONTENT_TYPE},
+-        )
+-        self.assertEqual(response.status_code, 200)
+-        self.assertIn(
+-            formats.binary.BINARY_CONTENT_TYPE,
+-            response.headers.get("content-type"),
+-        )
+-
+-        payload = await response.get_data()
+-        metrics = pmp.decode(payload)
+-        self.assertEqual(len(metrics), 1)
+-        mf = metrics[0]
+-        self.assertIsInstance(mf, pmp.MetricFamily)
+-        self.assertEqual(mf.type, pmp.COUNTER)
+-        self.assertEqual(len(mf.metric), 1)
+-        self.assertEqual(mf.metric[0].counter.value, 1)
+-        self.assertEqual(mf.metric[0].label[0].name, "path")
+-        self.assertEqual(mf.metric[0].label[0].value, "/")
+-
+     async def test_asgi_middleware(self):
+         """check ASGI middleware usage in Quart app"""
+ 
+@@ -193,10 +138,9 @@ async def hello():
+         # Access boom route to trigger exception metric update.
+         # Silence the stderr output log generated by Quart when it captures
+         # the exception.
+-        with self.assertLogs("quart.app", logging.ERROR):
+-            with asynctest.mock.patch.object(sys.stderr, "write") as mock_stderr:
+-                response = await test_client.get("/boom")
+-                self.assertEqual(response.status_code, 500)
++        with unittest.mock.patch.object(sys.stderr, "write") as mock_stderr:
++            response = await test_client.get("/boom")
++            self.assertEqual(response.status_code, 500)
+ 
+         response = await test_client.get("/metrics", headers={"accept": "*/*"})
+         self.assertEqual(response.status_code, 200)
+@@ -290,10 +234,9 @@ async def hello():
+         # Access boom route to trigger exception metric update.
+         # Silence the stderr output log generated by Quart when it captures
+         # the exception.
+-        with self.assertLogs("quart.app", logging.ERROR):
+-            with asynctest.mock.patch.object(sys.stderr, "write") as mock_stderr:
+-                response = await test_client.get("/boom")
+-                self.assertEqual(response.status_code, 500)
++        with unittest.mock.patch.object(sys.stderr, "write") as mock_stderr:
++            response = await test_client.get("/boom")
++            self.assertEqual(response.status_code, 500)
+ 
+         response = await test_client.get("/metrics", headers={"accept": "*/*"})
+         self.assertEqual(response.status_code, 200)
+diff --git a/tests/test_renderer.py b/tests/test_renderer.py
+index bedfcd3..55de0ad 100644
+--- a/tests/test_renderer.py
++++ b/tests/test_renderer.py
+@@ -1,16 +1,9 @@
+-import asynctest
++import unittest
+ 
+ from aioprometheus import REGISTRY, formats, render
+ 
+-try:
+-    import prometheus_metrics_proto as pmp
+ 
+-    have_pmp = True
+-except ImportError:
+-    have_pmp = False
+-
+-
+-class TestRenderer(asynctest.TestCase):
++class TestRenderer(unittest.IsolatedAsyncioTestCase):
+     async def test_invalid_registry(self):
+         """check only valid registry can be provided"""
+         for invalid_registry in ["nope", dict(), list()]:
+@@ -36,13 +29,3 @@ async def test_render_text(self):
+         accepts_headers = ("text/plain;",)
+         content, http_headers = render(REGISTRY, accepts_headers)
+         self.assertEqual(http_headers["Content-Type"], formats.text.TEXT_CONTENT_TYPE)
+-
+-    @asynctest.skipUnless(have_pmp, "prometheus_metrics_proto library is not available")
+-    async def test_render_binary(self):
+-        """check metrics can be rendered using binary format"""
+-        accepts_headers = (formats.binary.BINARY_CONTENT_TYPE,)
+-        content, http_headers = render(REGISTRY, accepts_headers)
+-        self.assertEqual(
+-            http_headers["Content-Type"],
+-            formats.binary.BINARY_CONTENT_TYPE,
+-        )

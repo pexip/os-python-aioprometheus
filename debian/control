@@ -4,6 +4,7 @@ Priority: optional
 Maintainer: Pexip AS <packaging@pexip.com>
 Build-Depends: debhelper (>= 11), dh-python, python3-all, python3-setuptools,
  python3-aiohttp,
+ python3-starlette,
 Standards-Version: 4.1.3
 Homepage: https://github.com/claws/aioprometheus
 X-Python3-Version: >= 3.7
