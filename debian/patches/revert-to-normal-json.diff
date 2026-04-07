@@ -1,3 +1,5 @@
+Revert to using normal JSON routines instead of requiring orjson
+
 --- a/requirements.txt
 +++ b/requirements.txt
 @@ -1 +1,2 @@
